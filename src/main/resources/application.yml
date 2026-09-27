@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: db-connect-mcp
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      username: ""
+      password: "replace-me"
+  ai:
+    mcp:
+      server:
+        name: db-connect-mcp
+        version: 0.1.0
+        protocol: STREAMABLE
+        type: SYNC
+        instructions: "Read-only access to the configured MySQL database and Redis instance. Credentials are never exposed."
+        capabilities:
+          tool: true
+          resource: false
+          prompt: false
+          completion: false
+        streamable-http:
+          mcp-endpoint: /mcp
+
+server:
+  address: 127.0.0.1
+  port: 8080
+
+dbmcp:
+  database:
+    url: "jdbc:mysql://127.0.0.1:3306/example?useUnicode=true&characterEncoding=utf8"
+    username: "readonly_user"
+    password: "replace-me"
+  query:
+    max-rows: 100
+    timeout-seconds: 10
+    max-cell-chars: 4000
+  redis:
+    max-scan-count: 100
+    max-items: 100
+    max-value-chars: 4000

@@ -1,0 +1,105 @@
+#!/usr/bin/env sh
+set -eu
+
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+RUN_DIR="$PROJECT_DIR/run"
+PID_FILE="$RUN_DIR/db-mcp.pid"
+JAR_PATH_FILE="$RUN_DIR/db-mcp.jar-path"
+LOG_FILE="$RUN_DIR/db-mcp.log"
+JAR_NAME=${DB_MCP_JAR_NAME:-db-mcp.jar}
+
+usage() {
+    echo "Usage: $0 {start|stop|restart} [jar file or directory]" >&2
+    exit 2
+}
+
+resolve_jar() {
+    candidate=${1:-}
+    if [ -z "$candidate" ] && [ -n "${DB_MCP_JAR_PATH:-}" ]; then
+        candidate=$DB_MCP_JAR_PATH
+    fi
+    if [ -z "$candidate" ] && [ -n "${DB_MCP_EXPORT_PATH:-}" ]; then
+        candidate=$DB_MCP_EXPORT_PATH
+    fi
+    if [ -z "$candidate" ] && [ -f "$JAR_PATH_FILE" ]; then
+        candidate=$(cat "$JAR_PATH_FILE")
+    fi
+    if [ -z "$candidate" ]; then
+        candidate="$PROJECT_DIR/target/$JAR_NAME"
+    fi
+    if [ -d "$candidate" ]; then
+        candidate="$candidate/$JAR_NAME"
+    fi
+    if [ ! -f "$candidate" ]; then
+        echo "JAR not found: $candidate" >&2
+        exit 1
+    fi
+    JAR_PATH=$(CDPATH= cd -- "$(dirname -- "$candidate")" && pwd)/$(basename -- "$candidate")
+}
+
+running_pid() {
+    if [ ! -f "$PID_FILE" ]; then
+        return 1
+    fi
+    saved_pid=$(cat "$PID_FILE")
+    case "$saved_pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    if ! kill -0 "$saved_pid" 2>/dev/null; then
+        return 1
+    fi
+    if [ -f "$JAR_PATH_FILE" ]; then
+        saved_jar=$(cat "$JAR_PATH_FILE")
+        case "$(ps -p "$saved_pid" -o args= 2>/dev/null || true)" in
+            *"$saved_jar"*) printf '%s' "$saved_pid"; return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+start() {
+    if active_pid=$(running_pid); then
+        echo "db-mcp is already running (PID $active_pid)."
+        return 0
+    fi
+    resolve_jar "${1:-}"
+    mkdir -p "$RUN_DIR"
+    cd "$PROJECT_DIR"
+    nohup java -jar "$JAR_PATH" >>"$LOG_FILE" 2>&1 </dev/null &
+    new_pid=$!
+    printf '%s\n' "$JAR_PATH" >"$JAR_PATH_FILE"
+    printf '%s\n' "$new_pid" >"$PID_FILE"
+    sleep 3
+    if ! kill -0 "$new_pid" 2>/dev/null; then
+        rm -f "$PID_FILE"
+        echo "db-mcp failed to start. See $LOG_FILE" >&2
+        exit 1
+    fi
+    echo "db-mcp started (PID $new_pid); log: $LOG_FILE"
+}
+
+stop() {
+    if ! active_pid=$(running_pid); then
+        echo "db-mcp is not running."
+        return 0
+    fi
+    kill "$active_pid"
+    count=0
+    while kill -0 "$active_pid" 2>/dev/null && [ "$count" -lt 20 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    if kill -0 "$active_pid" 2>/dev/null; then
+        echo "db-mcp did not stop within 20 seconds (PID $active_pid)." >&2
+        exit 1
+    fi
+    rm -f "$PID_FILE"
+    echo "db-mcp stopped."
+}
+
+case "${1:-}" in
+    start) start "${2:-}" ;;
+    stop) stop ;;
+    restart) stop; start "${2:-}" ;;
+    *) usage ;;
+esac
