@@ -6,8 +6,10 @@ spring:
       host: 127.0.0.1
       port: 6379
       database: 0
+      # This instance has no authentication: keep username/password empty
+      # (a placeholder password would make AUTH fail).
       username: ""
-      password: "replace-me"
+      password: ""
   ai:
     mcp:
       server:
@@ -15,29 +17,37 @@ spring:
         version: 0.1.0
         protocol: STREAMABLE
         type: SYNC
-        instructions: "Read-only access to the configured MySQL database and Redis instance. Credentials are never exposed."
+        instructions: "Read and write access to the configured MySQL database and Redis instance. DDL requires dbmcp.write.allow-ddl. Credentials are never exposed."
         capabilities:
           tool: true
           resource: false
           prompt: false
           completion: false
         streamable-http:
-          mcp-endpoint: /mcp
+          mcp-endpoint: /db-mcp
 
 server:
-  address: 127.0.0.1
-  port: 8080
+  # Binds to localhost by default; set the environment variable
+  # SERVER_ADDRESS=0.0.0.0 (or a private interface IP) when deploying to a
+  # remote server.
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8283}
 
 dbmcp:
   database:
-    url: "jdbc:mysql://127.0.0.1:3306/example?useUnicode=true&characterEncoding=utf8"
-    username: "readonly_user"
+    url: "jdbc:mysql://127.0.0.1:3306/example?useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2B8"
+    username: "replace-me"
     password: "replace-me"
+    # Connection pool (HikariCP) sizing and timeouts.
+    max-active: 20
+    min-idle: 5
+    connection-timeout: 5000
   query:
+    # Limits for db_query and the shared SQL statement timeout.
     max-rows: 100
     timeout-seconds: 10
     max-cell-chars: 4000
-  redis:
-    max-scan-count: 100
-    max-items: 100
-    max-value-chars: 4000
+  write:
+    # DDL tool switch; DML is always allowed. Reads and writes share the
+    # connection and account configured under dbmcp.database.
+    allow-ddl: true

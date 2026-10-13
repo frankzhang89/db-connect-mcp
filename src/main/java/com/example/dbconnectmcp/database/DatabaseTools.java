@@ -6,6 +6,10 @@ import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
 
+/**
+ * Read-only MySQL tools exposed over MCP. All of them go through
+ * {@link DatabaseReadService}, which forces read-only sessions.
+ */
 @Component
 public class DatabaseTools {
 
@@ -15,25 +19,25 @@ public class DatabaseTools {
         this.service = service;
     }
 
-    @McpTool(name = "db_list_tables", description = "列出已配置 MySQL 数据库中的表和视图，最多返回 500 个。",
+    @McpTool(name = "db_list_tables", description = "List tables and views in the configured MySQL database; returns at most 500 entries.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> listTables() {
         return service.listTables();
     }
 
-    @McpTool(name = "db_describe_table", description = "查看指定表的字段类型、可空性和主键。",
+    @McpTool(name = "db_describe_table", description = "Inspect a table's column names, types, nullability, and primary key.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> describeTable(
-            @McpToolParam(description = "精确表名", required = true) String tableName) {
+            @McpToolParam(description = "Exact table name", required = true) String tableName) {
         return service.describeTable(tableName);
     }
 
-    @McpTool(name = "db_query", description = "执行单条只读 SELECT 查询；使用 ? 占位符和 parameters 参数绑定值。",
+    @McpTool(name = "db_query", description = "Run one read-only SELECT query (WITH ... SELECT allowed); bind values with ? placeholders and the parameters argument. Returns at most 100 rows within a 10 second timeout.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> query(
-            @McpToolParam(description = "只读 SELECT SQL", required = true) String sql,
-            @McpToolParam(description = "按 ? 顺序排列的标量参数，可省略", required = false) List<Object> parameters,
-            @McpToolParam(description = "请求返回的最大行数，可省略", required = false) Integer maxRows) {
+            @McpToolParam(description = "Read-only SELECT SQL", required = true) String sql,
+            @McpToolParam(description = "Scalar parameters in ? order, optional", required = false) List<Object> parameters,
+            @McpToolParam(description = "Maximum number of rows to return, optional", required = false) Integer maxRows) {
         return service.query(sql, parameters, maxRows);
     }
 }

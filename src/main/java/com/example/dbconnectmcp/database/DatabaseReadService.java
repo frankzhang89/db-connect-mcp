@@ -17,8 +17,16 @@ import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+/**
+ * Read-only database access. Every operation borrows a pooled connection,
+ * forces the session read-only, and (for queries) rolls back in a finally
+ * block as a safety net, so a read can never persist changes.
+ */
 @Service
 public class DatabaseReadService {
+
+    // Hard cap for db_list_tables responses.
+    private static final int MAX_TABLES = 500;
 
     private final DataSource dataSource;
     private final DatabaseDialect dialect;
@@ -45,11 +53,12 @@ public class DatabaseReadService {
         boolean truncated = false;
         try (Connection connection = dataSource.getConnection()) {
             connection.setReadOnly(true);
+            // JDBC metadata lists tables and views without touching user data.
             DatabaseMetaData metadata = connection.getMetaData();
             try (ResultSet result = metadata.getTables(dialect.catalog(connection),
                     dialect.schemaPattern(connection), "%", new String[] {"TABLE", "VIEW"})) {
                 while (result.next()) {
-                    if (tables.size() >= 500) {
+                    if (tables.size() >= MAX_TABLES) {
                         truncated = true;
                         break;
                     }
@@ -67,7 +76,7 @@ public class DatabaseReadService {
 
     public Map<String, Object> describeTable(String tableName) {
         if (tableName == null || tableName.isBlank() || tableName.length() > 128) {
-            throw new IllegalArgumentException("表名不能为空且长度不能超过 128 个字符。");
+            throw new IllegalArgumentException("The table name must not be empty and must not exceed 128 characters.");
         }
         List<Map<String, Object>> columns = new ArrayList<>();
         List<String> primaryKeys = new ArrayList<>();
@@ -76,6 +85,7 @@ public class DatabaseReadService {
             DatabaseMetaData metadata = connection.getMetaData();
             String catalog = dialect.catalog(connection);
             String schema = dialect.schemaPattern(connection);
+            // getColumns may match several tables case-insensitively; keep exact hits only.
             try (ResultSet result = metadata.getColumns(catalog, schema, tableName, "%")) {
                 while (result.next()) {
                     if (!tableName.equalsIgnoreCase(result.getString("TABLE_NAME"))) {
@@ -90,7 +100,7 @@ public class DatabaseReadService {
                 }
             }
             if (columns.isEmpty()) {
-                throw new IllegalArgumentException("未找到指定表或无权读取其结构。");
+                throw new IllegalArgumentException("The table was not found or its structure cannot be read.");
             }
             try (ResultSet result = metadata.getPrimaryKeys(catalog, schema, tableName)) {
                 while (result.next()) {
@@ -105,7 +115,9 @@ public class DatabaseReadService {
     }
 
     public Map<String, Object> query(String sql, List<Object> parameters, Integer requestedRows) {
+        // Whitelist validation happens before any connection is opened.
         sqlGuard.validate(sql);
+        // Clamp the requested row limit to the configured maximum.
         int rowLimit = requestedRows == null ? maxRows : Math.min(Math.max(1, requestedRows), maxRows);
         List<Object> args = parameters == null ? List.of() : parameters;
         List<Map<String, Object>> rows = new ArrayList<>();
@@ -116,11 +128,12 @@ public class DatabaseReadService {
             connection.setAutoCommit(false);
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setQueryTimeout(timeoutSeconds);
+                // Fetch one extra row to detect truncation without a second count query.
                 statement.setMaxRows(rowLimit + 1);
                 for (int i = 0; i < args.size(); i++) {
                     Object arg = args.get(i);
                     if (arg != null && !(arg instanceof String || arg instanceof Number || arg instanceof Boolean)) {
-                        throw new IllegalArgumentException("SQL 参数只能是字符串、数字、布尔值或 null。");
+                        throw new IllegalArgumentException("SQL parameters may only be strings, numbers, booleans, or null.");
                     }
                     statement.setObject(i + 1, arg);
                 }
@@ -143,6 +156,7 @@ public class DatabaseReadService {
                 }
             }
             finally {
+                // Safety net: a read-only session must never commit anything.
                 connection.rollback();
             }
         }
@@ -153,6 +167,10 @@ public class DatabaseReadService {
                 "truncated", truncated, "maxRows", rowLimit);
     }
 
+    /**
+     * Converts a JDBC value into an MCP-safe payload: binary data becomes
+     * bounded base64, and long text is truncated at maxCellChars.
+     */
     private Object safeValue(Object value) throws SQLException {
         if (value == null) {
             return null;
@@ -186,6 +204,6 @@ public class DatabaseReadService {
 
     private IllegalStateException databaseFailure(SQLException ex) {
         String sqlState = ex.getSQLState();
-        return new IllegalStateException("数据库读取失败" + (sqlState == null ? "。" : "（SQLState: " + sqlState + "）。"));
+        return new IllegalStateException("Database read failed" + (sqlState == null ? "." : " (SQLState: " + sqlState + ")."));
     }
 }

@@ -1,0 +1,84 @@
+{
+  "properties": [
+    {
+      "name": "dbmcp.database.url",
+      "type": "java.lang.String",
+      "description": "MySQL JDBC URL shared by the read and write tools; must start with jdbc:mysql:."
+    },
+    {
+      "name": "dbmcp.database.username",
+      "type": "java.lang.String",
+      "description": "MySQL account shared by the read and write tools; use a least-privilege account."
+    },
+    {
+      "name": "dbmcp.database.password",
+      "type": "java.lang.String",
+      "description": "MySQL password."
+    },
+    {
+      "name": "dbmcp.database.max-active",
+      "type": "java.lang.Integer",
+      "description": "Maximum HikariCP pool size.",
+      "defaultValue": 3
+    },
+    {
+      "name": "dbmcp.database.min-idle",
+      "type": "java.lang.Integer",
+      "description": "Minimum number of idle HikariCP connections to keep in the pool."
+    },
+    {
+      "name": "dbmcp.database.connection-timeout",
+      "type": "java.lang.Long",
+      "description": "Milliseconds to wait for a free connection before failing."
+    },
+    {
+      "name": "dbmcp.query.max-rows",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of rows db_query returns per call.",
+      "defaultValue": 100
+    },
+    {
+      "name": "dbmcp.query.timeout-seconds",
+      "type": "java.lang.Integer",
+      "description": "SQL statement timeout in seconds, shared by SELECT and DML/DDL.",
+      "defaultValue": 10
+    },
+    {
+      "name": "dbmcp.query.max-cell-chars",
+      "type": "java.lang.Integer",
+      "description": "Maximum characters per returned cell; longer values are truncated.",
+      "defaultValue": 4000
+    },
+    {
+      "name": "dbmcp.write.allow-ddl",
+      "type": "java.lang.Boolean",
+      "description": "DDL tool switch; when false, db_execute_ddl rejects execution while DML stays available.",
+      "defaultValue": true
+    },
+    {
+      "name": "dbmcp.redis.max-databases",
+      "type": "java.lang.Integer",
+      "description": "Number of databases redis_select_db may switch between; valid indexes are 0 to this value minus one.",
+      "defaultValue": 16
+    },
+    {
+      "name": "dbmcp.redis.max-scan-count",
+      "type": "java.lang.Integer",
+      "description": "Upper bound for the COUNT hint of redis_scan_keys.",
+      "defaultValue": 100
+    },
+    {
+      "name": "dbmcp.redis.max-items",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of elements per Redis read, write, or delete call.",
+      "defaultValue": 100
+    },
+    {
+      "name": "dbmcp.redis.max-value-chars",
+      "type": "java.lang.Integer",
+      "description": "Maximum characters per Redis value; reads truncate and writes reject longer values.",
+      "defaultValue": 4000
+    }
+  ],
+  "hints": []
+}

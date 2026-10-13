@@ -16,19 +16,23 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
+/**
+ * All reads run against the currently selected database tracked by
+ * {@link RedisDatabaseService}, so they follow {@code redis_select_db}.
+ */
 @Service
 public class RedisReadService {
 
-    private final StringRedisTemplate redis;
+    private final RedisDatabaseService databases;
     private final int maxScanCount;
     private final int maxItems;
     private final int maxValueChars;
 
-    public RedisReadService(StringRedisTemplate redis,
+    public RedisReadService(RedisDatabaseService databases,
             @Value("${dbmcp.redis.max-scan-count:100}") int maxScanCount,
             @Value("${dbmcp.redis.max-items:100}") int maxItems,
             @Value("${dbmcp.redis.max-value-chars:4000}") int maxValueChars) {
-        this.redis = redis;
+        this.databases = databases;
         this.maxScanCount = Math.max(1, maxScanCount);
         this.maxItems = Math.max(1, maxItems);
         this.maxValueChars = Math.max(1, maxValueChars);
@@ -36,19 +40,23 @@ public class RedisReadService {
 
     public Map<String, Object> scanKeys(String pattern, String cursor, Integer requestedCount) {
         return safely(() -> {
+            // Every call reads through the template of the currently selected database.
+            StringRedisTemplate redis = databases.currentTemplate();
             String match = pattern == null || pattern.isBlank() ? "*" : pattern;
             if (match.length() > 256) {
-                throw new IllegalArgumentException("Redis 匹配模式过长。");
+                throw new IllegalArgumentException("The Redis match pattern is too long.");
             }
             String position = cursor == null || cursor.isBlank() ? "0" : cursor;
             if (!position.matches("[0-9]{1,20}")) {
-                throw new IllegalArgumentException("Redis 游标必须是非负整数。");
+                throw new IllegalArgumentException("The Redis cursor must be a non-negative integer.");
             }
             int count = bound(requestedCount, maxScanCount);
+            // Raw SCAN keeps full control over MATCH/COUNT; the returned cursor
+            // must be passed back by the caller to continue pagination.
             Object response = redis.execute((RedisCallback<Object>) connection -> connection.execute("SCAN",
                     bytes(position), bytes("MATCH"), bytes(match), bytes("COUNT"), bytes(Integer.toString(count))));
             if (!(response instanceof List<?> parts) || parts.size() != 2 || !(parts.get(1) instanceof List<?> rawKeys)) {
-                throw new IllegalStateException("Redis SCAN 返回了无法识别的结果。");
+                throw new IllegalStateException("Redis SCAN returned an unrecognized result.");
             }
             List<String> keys = new ArrayList<>();
             for (Object rawKey : rawKeys) {
@@ -60,12 +68,15 @@ public class RedisReadService {
 
     public Map<String, Object> inspectKey(String key) {
         return safely(() -> {
+            StringRedisTemplate redis = databases.currentTemplate();
             requireKey(key);
             DataType type = redis.type(key);
             if (type == null || type == DataType.NONE) {
                 return Map.of("key", key, "exists", false);
             }
             Long ttl = redis.getExpire(key, TimeUnit.SECONDS);
+            // The size metric is type-specific: string bytes, hash fields,
+            // list elements, set members, or sorted-set members.
             Long size = switch (type) {
                 case STRING -> redis.opsForValue().size(key);
                 case HASH -> redis.opsForHash().size(key);
@@ -86,6 +97,7 @@ public class RedisReadService {
 
     public Map<String, Object> readKey(String key, Integer requestedItems) {
         return safely(() -> {
+            StringRedisTemplate redis = databases.currentTemplate();
             requireKey(key);
             int limit = bound(requestedItems, maxItems);
             DataType type = redis.type(key);
@@ -95,8 +107,11 @@ public class RedisReadService {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("key", key);
             result.put("type", type.code());
+            // Dispatch on the stored type; every branch is bounded by the
+            // element and character limits.
             switch (type) {
                 case STRING -> {
+                    // GETRANGE-style bounded read for potentially huge strings.
                     Long length = redis.opsForValue().size(key);
                     String value = redis.opsForValue().get(key, 0, maxValueChars - 1L);
                     result.put("value", value);
@@ -108,6 +123,7 @@ public class RedisReadService {
                     result.put("truncated", length != null && length > limit);
                 }
                 case HASH -> {
+                    // HSCAN avoids blocking the server on large hashes.
                     List<Map<String, Object>> items = new ArrayList<>();
                     try (Cursor<Map.Entry<Object, Object>> scan = redis.opsForHash().scan(key, scanOptions(limit))) {
                         while (scan.hasNext() && items.size() < limit) {
@@ -143,7 +159,7 @@ public class RedisReadService {
                     result.put("items", items);
                     result.put("truncated", redis.opsForZSet().size(key) > items.size());
                 }
-                default -> throw new IllegalArgumentException("第一版不支持读取此 Redis 类型。");
+                default -> throw new IllegalArgumentException("This Redis data type is not supported for reading yet.");
             }
             return result;
         });
@@ -169,7 +185,7 @@ public class RedisReadService {
 
     private void requireKey(String key) {
         if (key == null || key.isBlank() || key.length() > 512) {
-            throw new IllegalArgumentException("Redis key 不能为空且长度不能超过 512 个字符。");
+            throw new IllegalArgumentException("The Redis key must not be empty and must not exceed 512 characters.");
         }
     }
 
@@ -189,11 +205,11 @@ public class RedisReadService {
         try {
             return operation.get();
         }
-        catch (IllegalArgumentException ex) {
+        catch (IllegalArgumentException | IllegalStateException ex) {
             throw ex;
         }
         catch (RuntimeException ex) {
-            throw new IllegalStateException("Redis 读取失败，请检查服务状态及只读权限。");
+            throw new IllegalStateException("Redis read failed; check the service status and permissions.");
         }
     }
 }

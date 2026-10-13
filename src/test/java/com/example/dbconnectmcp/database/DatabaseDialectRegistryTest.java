@@ -22,7 +22,7 @@ class DatabaseDialectRegistryTest {
         for (String url : List.of("jdbc:oracle:thin:@localhost", "jdbc:sqlserver://localhost",
                 "jdbc:postgresql://localhost/demo", "jdbc:starrocks://localhost/demo")) {
             String message = assertThrows(IllegalArgumentException.class, () -> registry.resolve(url)).getMessage();
-            assertTrue(message.contains("尚未提供适配器"));
+            assertTrue(message.contains("has no adapter implemented yet"));
             assertFalse(message.contains(url));
         }
     }

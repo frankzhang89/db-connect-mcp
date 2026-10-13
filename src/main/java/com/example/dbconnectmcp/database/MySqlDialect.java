@@ -2,6 +2,9 @@ package com.example.dbconnectmcp.database;
 
 import org.springframework.stereotype.Component;
 
+/**
+ * MySQL adapter; the only dialect implemented in this version.
+ */
 @Component
 public class MySqlDialect implements DatabaseDialect {
 
