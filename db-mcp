@@ -7,6 +7,95 @@ PID_FILE="$RUN_DIR/db-mcp.pid"
 JAR_PATH_FILE="$RUN_DIR/db-mcp.jar-path"
 LOG_FILE="$RUN_DIR/db-mcp.log"
 JAR_NAME=${DB_MCP_JAR_NAME:-db-mcp.jar}
+STARTUP_TIMEOUT=${DB_MCP_STARTUP_TIMEOUT_SEC:-60}
+
+wait_before_exit() {
+    # Automation/redirected input must not block waiting for a terminal.
+    if [ -t 0 ] && [ -t 1 ]; then
+        echo 'Press any key to close, or wait 5 seconds...'
+        terminal_state=$(stty -g) || return 0
+        trap 'stty "$terminal_state" 2>/dev/null || true; exit 130' INT
+        trap 'stty "$terminal_state" 2>/dev/null || true; exit 143' TERM HUP
+        if stty -icanon -echo min 0 time 50; then
+            dd bs=1 count=1 >/dev/null 2>&1 || true
+        fi
+        stty "$terminal_state" 2>/dev/null || true
+    fi
+}
+
+finish() {
+    result=$?
+    trap - 0
+    wait_before_exit
+    exit "$result"
+}
+trap finish 0
+
+case "$STARTUP_TIMEOUT" in
+    ''|*[!0-9]*|0) echo 'DB_MCP_STARTUP_TIMEOUT_SEC must be a positive integer.' >&2; exit 2 ;;
+esac
+if [ "$STARTUP_TIMEOUT" -le 0 ]; then
+    echo 'DB_MCP_STARTUP_TIMEOUT_SEC must be a positive integer.' >&2
+    exit 2
+fi
+
+listener_pids() {
+    conflict_port=$1
+    owner_pids=''
+    if command -v ss >/dev/null 2>&1; then
+        owner_pids=$(ss -ltnp "sport = :$conflict_port" 2>/dev/null |
+            sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
+    fi
+    if [ -z "$owner_pids" ] && command -v lsof >/dev/null 2>&1; then
+        owner_pids=$(lsof -nP -iTCP:"$conflict_port" -sTCP:LISTEN -t 2>/dev/null | sort -u)
+    fi
+    if [ -z "$owner_pids" ] && command -v fuser >/dev/null 2>&1; then
+        owner_pids=$(fuser -n tcp "$conflict_port" 2>/dev/null || true)
+    fi
+    printf '%s\n' "$owner_pids"
+}
+
+show_port_conflict() {
+    echo "Port conflict: $1" >&2
+    owners=$(listener_pids "$1")
+    if [ -z "$owners" ]; then
+        echo 'Owner PID / program directory: unavailable; install ss (iproute2) or lsof, or check process permissions.' >&2
+    fi
+    for owner in $owners; do
+        echo "Owner PID: $owner" >&2
+        executable=$(readlink "/proc/$owner/exe" 2>/dev/null || true)
+        owner_cwd=$(readlink "/proc/$owner/cwd" 2>/dev/null || true)
+        owner_jar=''
+        if [ -r "/proc/$owner/cmdline" ]; then
+            owner_jar=$(tr '\000' '\n' <"/proc/$owner/cmdline" | awk 'previous == "-jar" { print; exit } { previous = $0 }')
+        fi
+        program_dir=''
+        if [ -n "$executable" ]; then
+            echo "Executable: $executable" >&2
+            program_dir=$(dirname -- "$executable")
+        fi
+        if [ -n "$owner_jar" ]; then
+            case "$owner_jar" in
+                /*) ;;
+                *) if [ -n "$owner_cwd" ]; then owner_jar="$owner_cwd/$owner_jar"; fi ;;
+            esac
+            echo "Application JAR: $owner_jar" >&2
+            case "$owner_jar" in /*) program_dir=$(dirname -- "$owner_jar") ;; esac
+        fi
+        echo "Program directory: ${program_dir:-unavailable (access denied or process exited)}" >&2
+    done
+}
+
+startup_log() {
+    # Inspect this launch only, while keeping the append-only historical log.
+    tail -n "+$launch_line" "$LOG_FILE"
+}
+
+show_startup_failure() {
+    port=$(startup_log | sed -n 's/.*Port \([0-9][0-9]*\) was already in use.*/\1/p' | head -n 1)
+    if [ -n "$port" ]; then show_port_conflict "$port"; fi
+    echo "db-mcp failed to start. See $LOG_FILE" >&2
+}
 
 usage() {
     echo "Usage: $0 {start|stop|restart} [jar file or directory]" >&2
@@ -48,6 +137,8 @@ running_pid() {
     if ! kill -0 "$saved_pid" 2>/dev/null; then
         return 1
     fi
+    # An exited Java child can remain a zombie until its parent reaps it.
+    case "$(ps -p "$saved_pid" -o stat= 2>/dev/null || true)" in *Z*) return 1 ;; esac
     if [ -f "$JAR_PATH_FILE" ]; then
         saved_jar=$(cat "$JAR_PATH_FILE")
         case "$(ps -p "$saved_pid" -o args= 2>/dev/null || true)" in
@@ -60,22 +151,45 @@ running_pid() {
 start() {
     if active_pid=$(running_pid); then
         echo "db-mcp is already running (PID $active_pid)."
+        if command -v ss >/dev/null 2>&1; then
+            ss -ltnp 2>/dev/null | awk -v owner="pid=$active_pid," 'index($0, owner) { print "Listening address: " $4 }'
+        elif command -v lsof >/dev/null 2>&1; then
+            lsof -nP -a -p "$active_pid" -iTCP -sTCP:LISTEN 2>/dev/null || true
+        fi
         return 0
     fi
     resolve_jar "${1:-}"
     mkdir -p "$RUN_DIR"
     cd "$PROJECT_DIR"
-    nohup java -jar "$JAR_PATH" >>"$LOG_FILE" 2>&1 </dev/null &
+    java_command=java
+    if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then java_command="$JAVA_HOME/bin/java"; fi
+    touch "$LOG_FILE"
+    launch_line=$(( $(wc -l <"$LOG_FILE") + 1 ))
+    nohup "$java_command" -jar "$JAR_PATH" >>"$LOG_FILE" 2>&1 </dev/null &
     new_pid=$!
     printf '%s\n' "$JAR_PATH" >"$JAR_PATH_FILE"
     printf '%s\n' "$new_pid" >"$PID_FILE"
-    sleep 3
-    if ! kill -0 "$new_pid" 2>/dev/null; then
-        rm -f "$PID_FILE"
-        echo "db-mcp failed to start. See $LOG_FILE" >&2
-        exit 1
-    fi
-    echo "db-mcp started (PID $new_pid); log: $LOG_FILE"
+    elapsed=0
+    while [ "$elapsed" -lt "$STARTUP_TIMEOUT" ]; do
+        if ! running_pid >/dev/null; then
+            rm -f "$PID_FILE"
+            show_startup_failure
+            exit 1
+        fi
+        # Boot 3/4 print "port 8283", older versions "port(s): 8283".
+        port=$(startup_log | sed -n \
+            -e 's/.*Tomcat started on port \([0-9][0-9]*\).*/\1/p' \
+            -e 's/.*Tomcat started on port(s): \([0-9][0-9]*\).*/\1/p' | tail -n 1)
+        if [ -n "$port" ] && startup_log | grep -q 'Started [^ ]* in [0-9.]* seconds'; then
+            echo "db-mcp started (PID $new_pid); service port: $port"
+            echo "Log: $LOG_FILE"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "db-mcp is not ready after $STARTUP_TIMEOUT seconds (PID $new_pid retained for stop/restart). See $LOG_FILE" >&2
+    exit 1
 }
 
 stop() {
@@ -85,11 +199,11 @@ stop() {
     fi
     kill "$active_pid"
     count=0
-    while kill -0 "$active_pid" 2>/dev/null && [ "$count" -lt 20 ]; do
+    while running_pid >/dev/null && [ "$count" -lt 20 ]; do
         sleep 1
         count=$((count + 1))
     done
-    if kill -0 "$active_pid" 2>/dev/null; then
+    if running_pid >/dev/null; then
         echo "db-mcp did not stop within 20 seconds (PID $active_pid)." >&2
         exit 1
     fi
@@ -100,6 +214,6 @@ stop() {
 case "${1:-}" in
     start) start "${2:-}" ;;
     stop) stop ;;
-    restart) stop; start "${2:-}" ;;
+    restart) resolve_jar "${2:-}"; restart_jar=$JAR_PATH; stop; start "$restart_jar" ;;
     *) usage ;;
 esac

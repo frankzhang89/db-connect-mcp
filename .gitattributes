@@ -1,0 +1,2 @@
+db-mcp text eol=lf
+db-mcp.cmd text eol=crlf

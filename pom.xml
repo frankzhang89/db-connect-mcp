@@ -22,6 +22,7 @@
         <spring-ai.version>2.0.1</spring-ai.version>
         <jsqlparser.version>5.4</jsqlparser.version>
         <base.export.path>${project.build.directory}</base.export.path>
+        <releaseName>db-mcp</releaseName>
     </properties>
 
     <dependencyManagement>
@@ -68,13 +69,13 @@
 
     <build>
         <!-- Change this value to customize the executable JAR name. -->
-        <finalName>db-mcp</finalName>
+        <finalName>${releaseName}</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
                 <configuration>
-                    <outputDirectory>${base.export.path}</outputDirectory>
+                    <outputDirectory>${base.export.path}/${releaseName}</outputDirectory>
                 </configuration>
             </plugin>
             <plugin>
