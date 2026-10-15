@@ -82,7 +82,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <outputDirectory>${base.export.path}</outputDirectory>
+                    <outputDirectory>${base.export.path}/${releaseName}</outputDirectory>
                 </configuration>
             </plugin>
         </plugins>

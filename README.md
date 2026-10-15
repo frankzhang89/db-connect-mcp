@@ -26,7 +26,7 @@ A standard build creates the executable JAR at `target/db-mcp.jar`:
 
 ```powershell
 mvn clean package
-.\db-mcp.cmd start
+.\db-mcp.cmd start target/db-mcp.jar
 ```
 
 To write the JAR to a specific directory, set `base.export.path`. Spring Boot also writes `db-mcp.jar.original` there; run `db-mcp.jar`, which is the executable JAR.
@@ -42,11 +42,13 @@ On Windows, `db-mcp.cmd` invokes `db-mcp.ps1`. On Linux or macOS, use `sh ./db-m
 
 Double-clicking `db-mcp.cmd`, or running it without arguments, defaults to `restart`. Both launchers wait for Spring Boot startup to complete and report the service's actual listening port. On an interactive terminal, they keep the result visible for five seconds, or until any key is pressed; redirected/non-interactive runs skip this pause. Closing this prompt leaves the background service running.
 
-Startup waits up to 60 seconds; override this with `DB_MCP_STARTUP_TIMEOUT_SEC` (a positive integer). A timeout leaves the recorded process available for `stop` or `restart`. Both scripts prefer `JAVA_HOME/bin/java` when available, otherwise they use Java from `PATH`.
+Startup waits up to 60 seconds; override this with `DB_MCP_STARTUP_TIMEOUT_SEC` (a positive integer). A timeout leaves the recorded process available for `stop` or `restart`.
+
+The JDK environment variable name is configurable near the top of each launcher: `$jdkHomeEnvName = 'JDK25'` in `db-mcp.ps1`, and `JDK_HOME_ENV=JDK25` in `db-mcp`. Set that environment variable to the JDK home directory (not its `bin` directory). If the name is empty or the named variable is unset/empty, the scripts use `JAVA_HOME`; if neither home is set, they use Java from `PATH`. A configured home with a missing Java executable produces an error instead of silently selecting another JDK. Startup prints the selected Java executable. `restart` validates the Java selection before stopping the running service.
 
 If startup fails because a port is already in use, the launcher reports the conflicting port, owner PID, executable, and program directory. For Java processes launched with `-jar`, it also reports the application JAR and uses its directory when resolvable. Linux diagnostics use `ss` (iproute2), `lsof`, or `fuser`; process details can be unavailable when permissions prevent inspection or the owner has already exited. The scripts do not terminate the conflicting process.
 
-For `start` and `restart`, the optional second argument can be a JAR file or its directory. If omitted, the scripts reuse the last started JAR; on the first run, they use `target/db-mcp.jar`. You can also specify the location with `DB_MCP_JAR_PATH` or `DB_MCP_EXPORT_PATH`. The scripts store the process ID and logs in the project's `run/` directory.
+For deployment, put `db-mcp.jar` alongside the startup scripts. `start` and `restart` default to that sibling JAR, regardless of the caller's working directory or the previously started JAR. The optional second argument can specify a different JAR file or directory; `DB_MCP_JAR_PATH` and `DB_MCP_EXPORT_PATH` also override the default. `DB_MCP_JAR_NAME` can change the expected filename. The recorded JAR path is used only to identify the managed process when checking or stopping it. The scripts store the process ID and logs in the script directory's `run/` folder.
 
 ## Connect Codex
 

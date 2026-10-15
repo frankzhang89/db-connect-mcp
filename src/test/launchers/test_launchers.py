@@ -19,7 +19,7 @@ ARTIFACTS.mkdir(parents=True, exist_ok=True)
 WORK = Path(tempfile.mkdtemp(prefix='case with spaces ', dir=ARTIFACTS))
 ENV = os.environ.copy()
 ENV['DB_MCP_STARTUP_TIMEOUT_SEC'] = '15'
-for name in ['DB_MCP_JAR_PATH', 'DB_MCP_EXPORT_PATH', 'DB_MCP_JAR_NAME', 'LAUNCHER_PROBE_MODE']:
+for name in ['DB_MCP_JAR_PATH', 'DB_MCP_EXPORT_PATH', 'DB_MCP_JAR_NAME', 'LAUNCHER_PROBE_MODE', 'JDK25']:
     ENV.pop(name, None)
 for name in ['db-mcp.cmd', 'db-mcp.ps1', 'db-mcp']:
     (WORK / name).write_text((ROOT / name).read_text(), encoding='utf-8', newline='\n')
@@ -60,6 +60,9 @@ with socket.socket() as server:
     java.chmod(0o755)
     ENV['JAVA_HOME'] = str(java_home)
 
+DEFAULT_JAR = WORK / 'db-mcp.jar'
+DEFAULT_JAR.write_bytes(JAR.read_bytes())
+
 
 def run(action=None, jar=False, timeout=45):
     args = [] if action is None else [action]
@@ -95,6 +98,12 @@ def assert_ok(result, *messages):
 
 try:
     ENV['SERVER_PORT'] = str(free_port())
+    # Deployment uses the sibling JAR even with a stale target-path record.
+    (WORK / 'run').mkdir()
+    (WORK / 'run/db-mcp.jar-path').write_text(str(WORK / 'target/missing.jar'))
+    assert_ok(run('restart'), 'service port: ' + ENV['SERVER_PORT'])
+    assert Path((WORK / 'run/db-mcp.jar-path').read_text().strip()) == DEFAULT_JAR
+    assert_ok(run('stop'), 'stopped')
     # Restart when stopped, including a spaced JAR path and delayed readiness.
     assert_ok(run('restart', jar=True), 'service port: ' + ENV['SERVER_PORT'])
     first_pid = (WORK / 'run/db-mcp.pid').read_text().strip()
@@ -109,6 +118,7 @@ try:
         assert_ok(run(), 'service port: ' + ENV['SERVER_PORT'])
     else:
         assert_ok(run('restart'), 'service port: ' + ENV['SERVER_PORT'])
+    assert Path((WORK / 'run/db-mcp.jar-path').read_text().strip()) == DEFAULT_JAR
     assert (WORK / 'run/db-mcp.pid').read_text().strip() != first_pid
     assert_ok(run('stop'), 'stopped')
     assert_ok(run('stop'), 'not running')
@@ -159,6 +169,22 @@ try:
     assert_ok(run('stop'), 'stopped')
     ENV.pop('LAUNCHER_PROBE_MODE')
     ENV['DB_MCP_STARTUP_TIMEOUT_SEC'] = '15'
+
+    # The named JDK must take precedence over an unusable JAVA_HOME.
+    actual_home = ENV['JAVA_HOME']
+    ENV['JDK25'] = actual_home
+    ENV['JAVA_HOME'] = str(WORK / 'invalid-default-jdk')
+    assert_ok(run('start'), 'Java: ' + str(Path(actual_home) / 'bin' / ('java.exe' if WINDOWS else 'java')))
+    named_pid = (WORK / 'run/db-mcp.pid').read_text().strip()
+    ENV['JDK25'] = str(WORK / 'invalid-named-jdk')
+    code, output = run('restart')
+    assert code != 0 and 'Java executable not found for JDK25' in output, output
+    assert (WORK / 'run/db-mcp.pid').read_text().strip() == named_pid
+    ENV['JDK25'] = actual_home
+    assert_ok(run('start'), 'already running', named_pid)
+    assert_ok(run('stop'), 'stopped')
+    ENV.pop('JDK25')
+    ENV['JAVA_HOME'] = actual_home
 
     if not WINDOWS:
         # Use a real terminal to verify both the five-second pause and any key.

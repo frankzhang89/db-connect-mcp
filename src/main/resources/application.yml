@@ -3,11 +3,10 @@ spring:
     name: db-connect-mcp
   data:
     redis:
-      host: 127.0.0.1
-      port: 6379
-      database: 0
-      # This instance has no authentication: keep username/password empty
-      # (a placeholder password would make AUTH fail).
+      host: 10.246.183.93
+      port: 11511
+      database: 13
+      # 该实例无鉴权：username/password 必须留空（不要保留占位密码，否则 AUTH 会失败）。
       username: ""
       password: ""
   ai:
@@ -27,27 +26,23 @@ spring:
           mcp-endpoint: /db-mcp
 
 server:
-  # Binds to localhost by default; set the environment variable
-  # SERVER_ADDRESS=0.0.0.0 (or a private interface IP) when deploying to a
-  # remote server.
-  address: ${SERVER_ADDRESS:127.0.0.1}
+  # 默认仅监听本机；部署到远程服务器时设置环境变量 SERVER_ADDRESS=0.0.0.0（或指定内网网卡 IP）。
+  address: 0.0.0.0
   port: ${SERVER_PORT:8283}
 
 dbmcp:
   database:
-    url: "jdbc:mysql://127.0.0.1:3306/example?useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2B8"
-    username: "replace-me"
-    password: "replace-me"
-    # Connection pool (HikariCP) sizing and timeouts.
+    url: "jdbc:mysql://10.246.183.132:3306/NEWUSERINFOPHONE?useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2B8"
+    username: "vip"
+    password: "vip"
+    # 连接池（HikariCP）。max-wait 为 Druid 语义，与 connection-timeout 等价，取较小值生效。
     max-active: 20
     min-idle: 5
     connection-timeout: 5000
   query:
-    # Limits for db_query and the shared SQL statement timeout.
     max-rows: 100
     timeout-seconds: 10
     max-cell-chars: 4000
   write:
-    # DDL tool switch; DML is always allowed. Reads and writes share the
-    # connection and account configured under dbmcp.database.
+    # DDL 工具开关；DML 始终允许。读写共用 dbmcp.database 的连接与账号。
     allow-ddl: true

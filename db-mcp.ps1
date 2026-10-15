@@ -7,6 +7,10 @@ param(
     [string]$JarOrDirectory
 )
 
+# Name of an environment variable containing a JDK home, e.g. JDK25.
+# Leave empty to use JAVA_HOME directly. An unset variable also falls back.
+$jdkHomeEnvName = 'JDK25'
+
 $ErrorActionPreference = 'Stop'
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runDir = Join-Path $projectDir 'run'
@@ -15,6 +19,27 @@ $jarPathFile = Join-Path $runDir 'db-mcp.jar-path'
 $outLog = Join-Path $runDir 'db-mcp.out.log'
 $errLog = Join-Path $runDir 'db-mcp.err.log'
 $jarName = if ($env:DB_MCP_JAR_NAME) { $env:DB_MCP_JAR_NAME } else { 'db-mcp.jar' }
+
+function Resolve-Java {
+    $jdkHome = $null
+    $sourceName = 'JAVA_HOME'
+    if ($jdkHomeEnvName) {
+        if ($jdkHomeEnvName -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+            throw 'Invalid JDK environment variable name in jdkHomeEnvName.'
+        }
+        $jdkHome = [Environment]::GetEnvironmentVariable($jdkHomeEnvName)
+        if (-not [string]::IsNullOrWhiteSpace($jdkHome)) { $sourceName = $jdkHomeEnvName }
+    }
+    if ([string]::IsNullOrWhiteSpace($jdkHome)) { $jdkHome = $env:JAVA_HOME }
+    if (-not [string]::IsNullOrWhiteSpace($jdkHome)) {
+        $executable = Join-Path $jdkHome 'bin/java.exe'
+        if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "Java executable not found for ${sourceName}: $executable"
+        }
+        return $executable
+    }
+    return (Get-Command java.exe -ErrorAction Stop).Source
+}
 
 function Wait-BeforeExit {
     if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return }
@@ -80,10 +105,7 @@ function Resolve-ManagedJar([string]$requested) {
     $candidate = $requested
     if (-not $candidate) { $candidate = $env:DB_MCP_JAR_PATH }
     if (-not $candidate) { $candidate = $env:DB_MCP_EXPORT_PATH }
-    if (-not $candidate -and (Test-Path -LiteralPath $jarPathFile)) {
-        $candidate = (Get-Content -LiteralPath $jarPathFile -Raw).Trim()
-    }
-    if (-not $candidate) { $candidate = Join-Path (Join-Path $projectDir 'target') $jarName }
+    if (-not $candidate) { $candidate = Join-Path $projectDir $jarName }
     if (Test-Path -LiteralPath $candidate -PathType Container) {
         $candidate = Join-Path $candidate $jarName
     }
@@ -116,15 +138,14 @@ function Start-Mcp([string]$requested) {
         return
     }
     $jarPath = Resolve-ManagedJar $requested
+    $java = Resolve-Java
     $timeout = 60
     if ($env:DB_MCP_STARTUP_TIMEOUT_SEC) {
         $timeout = [int]$env:DB_MCP_STARTUP_TIMEOUT_SEC
         if ($timeout -lt 1) { throw 'DB_MCP_STARTUP_TIMEOUT_SEC must be a positive integer.' }
     }
     New-Item -ItemType Directory -Path $runDir -Force | Out-Null
-    $java = if ($env:JAVA_HOME -and (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin/java.exe'))) {
-        Join-Path $env:JAVA_HOME 'bin/java.exe'
-    } else { (Get-Command java.exe -ErrorAction Stop).Source }
+    Write-Output "Java: $java"
     $process = Start-Process -FilePath $java -ArgumentList @('-jar', ('"' + $jarPath + '"')) `
         -WorkingDirectory $projectDir -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $outLog -RedirectStandardError $errLog
@@ -183,6 +204,7 @@ try {
         'restart' {
             # Validate the replacement JAR before stopping a running service.
             $resolvedJar = Resolve-ManagedJar $JarOrDirectory
+            $null = Resolve-Java
             if ($env:DB_MCP_STARTUP_TIMEOUT_SEC -and [int]$env:DB_MCP_STARTUP_TIMEOUT_SEC -lt 1) {
                 throw 'DB_MCP_STARTUP_TIMEOUT_SEC must be a positive integer.'
             }

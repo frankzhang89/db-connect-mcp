@@ -1,6 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
+# Name of an environment variable containing a JDK home, e.g. JDK25.
+# Leave empty to use JAVA_HOME directly. An unset variable also falls back.
+JDK_HOME_ENV=JDK25
+
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 RUN_DIR="$PROJECT_DIR/run"
 PID_FILE="$RUN_DIR/db-mcp.pid"
@@ -30,6 +34,28 @@ finish() {
     exit "$result"
 }
 trap finish 0
+
+resolve_java() {
+    jdk_home=''
+    source_name=JAVA_HOME
+    if [ -n "$JDK_HOME_ENV" ]; then
+        case "$JDK_HOME_ENV" in
+            [0-9]*|*[!A-Za-z0-9_]* ) echo 'Invalid JDK environment variable name in JDK_HOME_ENV.' >&2; return 1 ;;
+        esac
+        jdk_home=$(printenv "$JDK_HOME_ENV" 2>/dev/null || true)
+        if [ -n "$jdk_home" ]; then source_name=$JDK_HOME_ENV; fi
+    fi
+    if [ -z "$jdk_home" ]; then jdk_home=${JAVA_HOME:-}; fi
+    if [ -n "$jdk_home" ]; then
+        java_command="$jdk_home/bin/java"
+        if [ ! -x "$java_command" ]; then
+            echo "Java executable not found for $source_name: $java_command" >&2
+            return 1
+        fi
+    else
+        java_command=$(command -v java) || { echo 'Java not found in PATH.' >&2; return 1; }
+    fi
+}
 
 case "$STARTUP_TIMEOUT" in
     ''|*[!0-9]*|0) echo 'DB_MCP_STARTUP_TIMEOUT_SEC must be a positive integer.' >&2; exit 2 ;;
@@ -110,11 +136,8 @@ resolve_jar() {
     if [ -z "$candidate" ] && [ -n "${DB_MCP_EXPORT_PATH:-}" ]; then
         candidate=$DB_MCP_EXPORT_PATH
     fi
-    if [ -z "$candidate" ] && [ -f "$JAR_PATH_FILE" ]; then
-        candidate=$(cat "$JAR_PATH_FILE")
-    fi
     if [ -z "$candidate" ]; then
-        candidate="$PROJECT_DIR/target/$JAR_NAME"
+        candidate="$PROJECT_DIR/$JAR_NAME"
     fi
     if [ -d "$candidate" ]; then
         candidate="$candidate/$JAR_NAME"
@@ -159,10 +182,10 @@ start() {
         return 0
     fi
     resolve_jar "${1:-}"
+    resolve_java
     mkdir -p "$RUN_DIR"
     cd "$PROJECT_DIR"
-    java_command=java
-    if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then java_command="$JAVA_HOME/bin/java"; fi
+    echo "Java: $java_command"
     touch "$LOG_FILE"
     launch_line=$(( $(wc -l <"$LOG_FILE") + 1 ))
     nohup "$java_command" -jar "$JAR_PATH" >>"$LOG_FILE" 2>&1 </dev/null &
@@ -214,6 +237,6 @@ stop() {
 case "${1:-}" in
     start) start "${2:-}" ;;
     stop) stop ;;
-    restart) resolve_jar "${2:-}"; restart_jar=$JAR_PATH; stop; start "$restart_jar" ;;
+    restart) resolve_jar "${2:-}"; restart_jar=$JAR_PATH; resolve_java; stop; start "$restart_jar" ;;
     *) usage ;;
 esac
