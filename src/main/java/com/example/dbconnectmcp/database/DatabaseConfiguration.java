@@ -9,8 +9,8 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Creates the HikariCP pool shared by all database tools. The pool itself is
- * not marked read-only: read operations force their sessions read-only and
- * roll back as a safety net, while write operations clear the flag (see
+ * not marked read-only: dialect policies prepare read operations and restore
+ * writable sessions (see
  * {@link DatabaseReadService} and {@link DatabaseWriteService}).
  */
 @Configuration

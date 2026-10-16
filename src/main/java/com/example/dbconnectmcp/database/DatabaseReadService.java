@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,8 +20,8 @@ import org.springframework.stereotype.Service;
 
 /**
  * Read-only database access. Every operation borrows a pooled connection,
- * forces the session read-only, and (for queries) rolls back in a finally
- * block as a safety net, so a read can never persist changes.
+ * applies the dialect's read policy. JDBC read-only hints and rollback are
+ * additional safeguards, not a replacement for database permissions.
  */
 @Service
 public class DatabaseReadService {
@@ -34,6 +35,7 @@ public class DatabaseReadService {
     private final int maxRows;
     private final int timeoutSeconds;
     private final int maxCellChars;
+    private final String configuredSchema;
 
     public DatabaseReadService(DataSource dataSource, DatabaseProperties properties,
             DatabaseDialectRegistry registry, ReadOnlySqlGuard sqlGuard,
@@ -46,25 +48,33 @@ public class DatabaseReadService {
         this.maxRows = Math.max(1, maxRows);
         this.timeoutSeconds = Math.max(1, timeoutSeconds);
         this.maxCellChars = Math.max(1, maxCellChars);
+        this.configuredSchema = properties.schema();
     }
 
     public Map<String, Object> listTables() {
         List<Map<String, String>> tables = new ArrayList<>();
         boolean truncated = false;
         try (Connection connection = dataSource.getConnection()) {
-            connection.setReadOnly(true);
+            dialect.prepareRead(connection);
             // JDBC metadata lists tables and views without touching user data.
             DatabaseMetaData metadata = connection.getMetaData();
             try (ResultSet result = metadata.getTables(dialect.catalog(connection),
-                    dialect.schemaPattern(connection), "%", new String[] {"TABLE", "VIEW"})) {
+                    escapePattern(schema(connection, metadata, null), metadata), "%", new String[] {"TABLE", "VIEW"})) {
                 while (result.next()) {
                     if (tables.size() >= MAX_TABLES) {
                         truncated = true;
                         break;
                     }
-                    tables.add(Map.of(
-                            "name", result.getString("TABLE_NAME"),
-                            "type", result.getString("TABLE_TYPE")));
+                    Map<String, String> table = new LinkedHashMap<>();
+                    table.put("name", result.getString("TABLE_NAME"));
+                    table.put("type", result.getString("TABLE_TYPE"));
+                    if (result.getString("TABLE_CAT") != null) {
+                        table.put("catalog", result.getString("TABLE_CAT"));
+                    }
+                    if (result.getString("TABLE_SCHEM") != null) {
+                        table.put("schema", result.getString("TABLE_SCHEM"));
+                    }
+                    tables.add(table);
                 }
             }
         }
@@ -75,22 +85,31 @@ public class DatabaseReadService {
     }
 
     public Map<String, Object> describeTable(String tableName) {
-        if (tableName == null || tableName.isBlank() || tableName.length() > 128) {
-            throw new IllegalArgumentException("The table name must not be empty and must not exceed 128 characters.");
-        }
+        return describeTable(tableName, null);
+    }
+
+    public Map<String, Object> describeTable(String tableName, String schemaName) {
+        validateIdentifier(tableName);
         List<Map<String, Object>> columns = new ArrayList<>();
         List<String> primaryKeys = new ArrayList<>();
+        Map<String, Object> description = new LinkedHashMap<>();
         try (Connection connection = dataSource.getConnection()) {
-            connection.setReadOnly(true);
+            dialect.prepareRead(connection);
             DatabaseMetaData metadata = connection.getMetaData();
             String catalog = dialect.catalog(connection);
-            String schema = dialect.schemaPattern(connection);
-            // getColumns may match several tables case-insensitively; keep exact hits only.
-            try (ResultSet result = metadata.getColumns(catalog, schema, tableName, "%")) {
+            String schema = schema(connection, metadata, schemaName);
+            String exactTable = normalizeIdentifier(tableName, metadata);
+            String actualTable = exactTable;
+            boolean caseInsensitive = metadata.storesMixedCaseIdentifiers() && !metadata.supportsMixedCaseIdentifiers();
+            // Escape JDBC pattern wildcards in literal table/schema names.
+            try (ResultSet result = metadata.getColumns(catalog, escapePattern(schema, metadata),
+                    escapePattern(exactTable, metadata), "%")) {
                 while (result.next()) {
-                    if (!tableName.equalsIgnoreCase(result.getString("TABLE_NAME"))) {
+                    String foundTable = result.getString("TABLE_NAME");
+                    if (!exactTable.equals(foundTable) && !(caseInsensitive && exactTable.equalsIgnoreCase(foundTable))) {
                         continue;
                     }
+                    actualTable = foundTable;
                     Map<String, Object> column = new LinkedHashMap<>();
                     column.put("name", result.getString("COLUMN_NAME"));
                     column.put("type", result.getString("TYPE_NAME"));
@@ -102,16 +121,25 @@ public class DatabaseReadService {
             if (columns.isEmpty()) {
                 throw new IllegalArgumentException("The table was not found or its structure cannot be read.");
             }
-            try (ResultSet result = metadata.getPrimaryKeys(catalog, schema, tableName)) {
+            try (ResultSet result = metadata.getPrimaryKeys(catalog, schema, actualTable)) {
                 while (result.next()) {
                     primaryKeys.add(result.getString("COLUMN_NAME"));
                 }
+            }
+            description.put("table", actualTable);
+            if (catalog != null) {
+                description.put("catalog", catalog);
+            }
+            if (schema != null) {
+                description.put("schema", schema);
             }
         }
         catch (SQLException ex) {
             throw databaseFailure(ex);
         }
-        return Map.of("table", tableName, "columns", columns, "primaryKeys", primaryKeys);
+        description.put("columns", columns);
+        description.put("primaryKeys", primaryKeys);
+        return description;
     }
 
     public Map<String, Object> query(String sql, List<Object> parameters, Integer requestedRows) {
@@ -124,8 +152,7 @@ public class DatabaseReadService {
         List<String> columnNames = new ArrayList<>();
         boolean truncated = false;
         try (Connection connection = dataSource.getConnection()) {
-            connection.setReadOnly(true);
-            connection.setAutoCommit(false);
+            dialect.beginRead(connection);
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setQueryTimeout(timeoutSeconds);
                 // Fetch one extra row to detect truncation without a second count query.
@@ -156,8 +183,10 @@ public class DatabaseReadService {
                 }
             }
             finally {
-                // Safety net: a read-only session must never commit anything.
-                connection.rollback();
+                // End read transactions without committing any changes.
+                if (dialect.usesReadTransaction()) {
+                    connection.rollback();
+                }
             }
         }
         catch (SQLException ex) {
@@ -165,6 +194,52 @@ public class DatabaseReadService {
         }
         return Map.of("columns", columnNames, "rows", rows, "rowCount", rows.size(),
                 "truncated", truncated, "maxRows", rowLimit);
+    }
+
+    private String schema(Connection connection, DatabaseMetaData metadata, String requestedSchema) throws SQLException {
+        String selected = requestedSchema == null || requestedSchema.isBlank() ? configuredSchema : requestedSchema;
+        if (selected != null && !selected.isBlank()) {
+            return normalizeIdentifier(selected, metadata);
+        }
+        String current = dialect.schemaPattern(connection);
+        if ((current == null || current.isBlank()) && !(dialect instanceof MySqlDialect)) {
+            throw new IllegalArgumentException("No current schema; configure dbmcp.database.schema for metadata discovery.");
+        }
+        return current;
+    }
+
+    private static void validateIdentifier(String name) {
+        if (name == null || name.isBlank() || name.length() > 1024) {
+            throw new IllegalArgumentException("The identifier must not be empty and must not exceed 1024 characters.");
+        }
+    }
+
+    private static String normalizeIdentifier(String name, DatabaseMetaData metadata) throws SQLException {
+        validateIdentifier(name);
+        if (name.length() > 2 && name.startsWith("\"") && name.endsWith("\"")) {
+            return name.substring(1, name.length() - 1).replace("\"\"", "\"");
+        }
+        if (name.length() > 2 && name.startsWith("`") && name.endsWith("`")) {
+            return name.substring(1, name.length() - 1).replace("``", "`");
+        }
+        if (name.length() > 2 && name.startsWith("[") && name.endsWith("]")) {
+            return name.substring(1, name.length() - 1).replace("]]", "]");
+        }
+        if (metadata.storesUpperCaseIdentifiers()) {
+            return name.toUpperCase(Locale.ROOT);
+        }
+        return metadata.storesLowerCaseIdentifiers() ? name.toLowerCase(Locale.ROOT) : name;
+    }
+
+    private static String escapePattern(String name, DatabaseMetaData metadata) throws SQLException {
+        if (name == null) {
+            return null;
+        }
+        String escape = metadata.getSearchStringEscape();
+        if (escape == null || escape.isEmpty()) {
+            return name;
+        }
+        return name.replace(escape, escape + escape).replace("_", escape + "_").replace("%", escape + "%");
     }
 
     /**

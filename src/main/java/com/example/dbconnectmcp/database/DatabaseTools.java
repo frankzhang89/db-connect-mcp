@@ -7,8 +7,7 @@ import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
 
 /**
- * Read-only MySQL tools exposed over MCP. All of them go through
- * {@link DatabaseReadService}, which forces read-only sessions.
+ * Read tools for the configured JDBC database, exposed over MCP.
  */
 @Component
 public class DatabaseTools {
@@ -19,7 +18,7 @@ public class DatabaseTools {
         this.service = service;
     }
 
-    @McpTool(name = "db_list_tables", description = "List tables and views in the configured MySQL database; returns at most 500 entries.",
+    @McpTool(name = "db_list_tables", description = "List tables and views in the configured JDBC database and schema; returns at most 500 entries with catalog/schema information when available.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> listTables() {
         return service.listTables();
@@ -28,8 +27,9 @@ public class DatabaseTools {
     @McpTool(name = "db_describe_table", description = "Inspect a table's column names, types, nullability, and primary key.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> describeTable(
-            @McpToolParam(description = "Exact table name", required = true) String tableName) {
-        return service.describeTable(tableName);
+            @McpToolParam(description = "Table name; quote mixed-case identifiers with double quotes when needed", required = true) String tableName,
+            @McpToolParam(description = "Optional schema override; defaults to the configured or current schema", required = false) String schemaName) {
+        return service.describeTable(tableName, schemaName);
     }
 
     @McpTool(name = "db_query", description = "Run one read-only SELECT query (WITH ... SELECT allowed); bind values with ? placeholders and the parameters argument. Returns at most 100 rows within a 10 second timeout.",

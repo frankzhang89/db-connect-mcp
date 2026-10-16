@@ -1,18 +1,47 @@
 # db-connect-mcp
 
-A self-hostable MCP server for one MySQL database and one Redis instance, providing both read and write tools. It binds to `127.0.0.1` by default and can be deployed to a remote server. Codex connects to the MCP endpoint; it does not need the database or Redis credentials.
+A self-hostable MCP server for one JDBC database and one Redis instance, providing both read and write tools. Supported JDBC databases are MySQL, Oracle, Microsoft SQL Server, PostgreSQL, and StarRocks. Codex connects to the MCP endpoint; it does not need the database or Redis credentials.
 
 ## Requirements
 
-- JDK 25 and Maven 3.6.3 or newer
+- JDK 25 and Maven 3.8.x or newer
 - Spring Boot 4.0.8 and Spring AI 2.0.1
-- Reachable MySQL and Redis instances with a least-privilege account (reads and writes share it)
+- A reachable supported JDBC database and Redis instance with least-privilege accounts (SQL reads and writes share one account)
 
 ## Configuration
 
-Set the connection addresses, usernames, and passwords under `dbmcp.database` and `spring.data.redis` in [`src/main/resources/application.yml`](src/main/resources/application.yml). The file currently contains example values. Do not commit it to a public repository after adding real credentials. Codex only needs the MCP endpoint URL. The same MySQL account is used for both read and write tools. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` can switch it at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
+Set the connection addresses, usernames, and passwords under `dbmcp.database` and `spring.data.redis` in [`src/main/resources/application.yml`](src/main/resources/application.yml). Do not commit this file to a public repository after adding real credentials. Codex only needs the MCP endpoint URL. The same database account is used for both read and write tools. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` can switch it at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
 
-The JDBC URL must begin with `jdbc:mysql:`. The code recognizes prefixes for Oracle, SQL Server, PostgreSQL, and StarRocks, but adapters for those databases have not been implemented yet.
+The JDBC URL selects the adapter automatically. All five independent drivers are included in the executable JAR:
+
+| Database | Example `dbmcp.database.url` | Driver class | Default metadata namespace |
+| --- | --- | --- | --- |
+| MySQL | `jdbc:mysql://db-host:3306/appdb` | `com.mysql.cj.jdbc.Driver` | Database from the URL (JDBC catalog) |
+| Oracle | `jdbc:oracle:thin:@//db-host:1521/FREEPDB1` | `oracle.jdbc.OracleDriver` | Current schema/owner, usually the uppercase user name |
+| SQL Server | `jdbc:sqlserver://db-host:1433;databaseName=appdb;encrypt=true` | `com.microsoft.sqlserver.jdbc.SQLServerDriver` | Current schema, commonly `dbo` |
+| PostgreSQL | `jdbc:postgresql://db-host:5432/appdb` | `org.postgresql.Driver` | Current schema from the connection's search path, commonly `public` |
+| StarRocks | `jdbc:starrocks://fe-host:9030/default_catalog.appdb` | `com.starrocks.cj.jdbc.Driver` | Catalog `default_catalog`, schema/database `appdb` |
+
+Keep usernames and passwords in the separate configuration fields. SQL Server's encrypted connection requires a trusted server certificate whose name matches the host. Configure the database's JDBC TLS options for your deployment. Oracle uses the pure-Java Thin driver, so no local Oracle client is required. Oracle's `ojdbc17` version is pinned for JDK 25 compatibility; Microsoft and PostgreSQL driver versions follow Spring Boot dependency management.
+
+For example, to select PostgreSQL:
+
+```yaml
+dbmcp:
+  database:
+    url: jdbc:postgresql://db-host:5432/appdb
+    username: app_user
+    password: your-password
+    schema: public
+```
+
+`dbmcp.database.schema` optionally narrows metadata discovery (Oracle owner, SQL Server/PostgreSQL schema, or StarRocks database); when omitted, the adapter uses the connection's current schema. MySQL uses its URL database instead. This setting does **not** change SQL name resolution: qualify objects in SQL such as `reporting.events`, or configure the connection's default schema/search path separately. `db_describe_table` accepts an optional `schemaName` override. Table lists include catalog/schema fields when the driver supplies them.
+
+Unquoted table/schema names follow the driver's identifier case rules (uppercase in Oracle, lowercase in PostgreSQL). Preserve case-sensitive names with SQL identifier quotes, for example pass `"MixedCase"` including the quotes for a quoted PostgreSQL table. JDBC wildcard characters in metadata names are escaped, so an underscore or percent sign is treated literally.
+
+StarRocks uses its own `com.starrocks:starrocks-connector-j` driver and `jdbc:starrocks:` URL; it does not route through the MySQL adapter. The URL path contains **catalog.database**, and the FE query port defaults to `9030`. The driver's catalog and schema APIs represent these two levels separately. See the [official StarRocks driver documentation](https://docs.starrocks.io/docs/integrations/JDBC_driver/).
+
+One server process still connects to **one** configured JDBC database. To expose several database connections simultaneously, run separate server processes with distinct configurations and ports.
 
 `application.yml` is packaged inside the JAR. After changing the connection settings, stop the running server, rebuild the JAR, and start it again.
 
@@ -22,11 +51,11 @@ Credentials stored in `application.yml` can be read by any process with access t
 
 The `<finalName>db-mcp</finalName>` setting in `pom.xml` controls the JAR filename. If you change it, set `DB_MCP_JAR_NAME` to the corresponding filename when using the startup scripts.
 
-A standard build creates the executable JAR at `target/db-mcp.jar`:
+A standard build creates the executable JAR at `target/db-mcp/db-mcp.jar`:
 
 ```powershell
 mvn clean package
-.\db-mcp.cmd start target/db-mcp.jar
+.\db-mcp.cmd start target/db-mcp/db-mcp.jar
 ```
 
 To write the JAR to a specific directory, set `base.export.path`. Spring Boot also writes `db-mcp.jar.original` there; run `db-mcp.jar`, which is the executable JAR.
@@ -63,7 +92,7 @@ The server listens on `127.0.0.1` by default; see [Remote deployment](#remote-de
 | Tool | Purpose |
 | --- | --- |
 | `db_list_tables` | List tables and views in the configured database (at most 500) |
-| `db_describe_table` | Inspect a table's columns and primary key |
+| `db_describe_table` | Inspect a table's columns and primary key, optionally selecting a schema |
 | `db_query` | Run one parameterized, read-only `SELECT` query |
 | `redis_scan_keys` | Scan keys with cursor-based pagination |
 | `redis_inspect_key` | Inspect a key's type, TTL, and size |
@@ -89,14 +118,16 @@ By default the server binds to `127.0.0.1`, so only local clients can reach the 
 
 Read and write access share the connection and account configured under `dbmcp.database`, so the write tools are always registered alongside the read tools. `dbmcp.write.allow-ddl` (default `true`) is the only write-specific switch; set it to `false` to reject DDL while keeping DML available.
 
-- `db_execute_dml` runs one parameterized `INSERT`, `UPDATE`, `DELETE`, `MERGE`, or `UPSERT` statement and returns the affected row count plus auto-generated keys for `INSERT` (at most 50).
+- `db_execute_dml` runs one parameterized `INSERT`, `UPDATE`, `DELETE`, `MERGE`, or `UPSERT` statement supported by the target database and returns the affected row count. MySQL and SQL Server INSERTs also return generated keys (at most 50); other DML statements do not request keys. Oracle, PostgreSQL, and StarRocks currently return only affected rows. Oracle's generic JDBC generated-key flag returns ROWID, and PostgreSQL's generic flag may return whole rows, so these are not mislabeled as generated primary keys. `RETURNING` and `OUTPUT` clauses are rejected before execution.
 - `db_execute_ddl` runs one `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, or `RENAME` statement.
 - `redis_write_key` writes a string, list, set, hash, or sorted set key. Lists append to the tail and hashes merge incrementally; an optional `ttlSeconds` sets the expiry.
 - `redis_delete_keys` deletes at most `dbmcp.redis.max-items` keys per call.
 - `redis_expire_key` sets a TTL, or removes it when `ttlSeconds` is `0`.
 - `redis_select_db` switches the Redis database for all subsequent Redis tools. Spring Data Redis rejects `SELECT` on shared Lettuce connections, so the switch creates a dedicated connection factory for the target database; the allowed range is `0` to `dbmcp.redis.max-databases - 1` (16 databases by default), and the starting database comes from `spring.data.redis.database`.
 
-Both SQL write tools accept a single statement without comments or `;`, validated by a JSqlParser whitelist before execution, with the shared `dbmcp.query.timeout-seconds` timeout. Redis writes are limited to `dbmcp.redis.max-items` elements of at most `dbmcp.redis.max-value-chars` characters each. The SQL whitelist and MCP annotations do not replace server-side permissions: use a least-privilege account, and remember that `DROP` and `TRUNCATE` are irreversible.
+Both SQL write tools accept a single comment-free statement, validated by a JSqlParser whitelist before execution, with the shared `dbmcp.query.timeout-seconds` timeout. One trailing `;` is allowed on writes (SQL Server MERGE requires it); embedded semicolons remain rejected. Use the target database's SQL syntax: this server does not translate MySQL SQL into Oracle, T-SQL, PostgreSQL, or StarRocks SQL. Vendor-specific syntax outside the parser/statement whitelist is rejected. SQL Server bracket-quoted identifiers are supported, as are PostgreSQL array expressions. Redis writes are limited to `dbmcp.redis.max-items` elements of at most `dbmcp.redis.max-value-chars` characters each.
+
+Read queries reject SELECT INTO, write-bearing CTEs, locking clauses, and known side-effect/sequence functions. Oracle SELECTs run inside `SET TRANSACTION READ ONLY` and are rolled back; MySQL, SQL Server, and PostgreSQL use JDBC's read-only hint and a rollback. StarRocks SELECTs avoid MySQL transaction-mode commands and rollback because transaction capabilities vary by server version. JDBC read-only is only a hint on some drivers. The SQL whitelist and MCP annotations do not replace server-side permissions; functions may have side effects, and writes share the configured account. StarRocks DML/DDL support also depends on server version, catalog, and table model. Use a least-privilege account, and remember that `DROP` and `TRUNCATE` are irreversible.
 
 To add another database later, implement `DatabaseDialect` and register it as a Spring Bean.
 
@@ -107,4 +138,6 @@ mvn test
 mvn package
 ```
 
-After starting the server, use Codex's `/mcp` command to inspect the tool list, then try `db_list_tables`, `db_query`, and the Redis tools with a least-privilege account. Unit tests and MCP tool registration can be checked without live MySQL or Redis instances, but actual data reads require running services.
+Unit tests load all five real JDBC drivers and check URL acceptance, Spring adapter registration, schema/name handling, per-dialect read behavior, parameter binding, row limits, generated-key policy, and SQL guards without connecting to a database. They do not establish compatibility with a live server.
+
+After starting the server, use Codex's `/mcp` command to inspect the tool list, then try `db_list_tables`, `db_describe_table`, `db_query`, and the Redis tools with a least-privilege account. For each target database, verify a parameterized SELECT, metadata in the expected schema, and permitted DML/DDL in a disposable test schema. Use `SELECT 1 FROM dual` for Oracle and `SELECT 1` for the other engines. Real data access requires reachable services and credentials.

@@ -3,7 +3,7 @@ package com.example.dbconnectmcp.database;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Connection settings for the single MySQL database. The same account and
+ * Connection settings for a single JDBC database. The same account and
  * pool serve both read and write tools. The optional {@code max-active},
  * {@code min-idle}, and {@code connection-timeout} values map to the
  * corresponding HikariCP settings.
@@ -15,5 +15,6 @@ public record DatabaseProperties(
         String password,
         Integer maxActive,
         Integer minIdle,
-        Long connectionTimeout) {
+        Long connectionTimeout,
+        String schema) {
 }

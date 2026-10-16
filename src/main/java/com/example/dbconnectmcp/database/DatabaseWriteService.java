@@ -15,7 +15,7 @@ import org.springframework.stereotype.Service;
 
 /**
  * Write access shares the connection pool with {@link DatabaseReadService};
- * reads mark their sessions read-only while writes explicitly clear it.
+ * Dialect policies prepare read sessions and restore writable sessions.
  */
 @Service
 public class DatabaseWriteService {
@@ -25,14 +25,17 @@ public class DatabaseWriteService {
 
     private final DataSource dataSource;
     private final WriteSqlGuard sqlGuard;
+    private final DatabaseDialect dialect;
     private final boolean allowDdl;
     private final int timeoutSeconds;
 
     public DatabaseWriteService(DataSource dataSource, WriteSqlGuard sqlGuard,
+            DatabaseProperties properties, DatabaseDialectRegistry registry,
             @Value("${dbmcp.write.allow-ddl:true}") boolean allowDdl,
             @Value("${dbmcp.query.timeout-seconds:10}") int timeoutSeconds) {
         this.dataSource = dataSource;
         this.sqlGuard = sqlGuard;
+        this.dialect = registry.resolve(properties.url());
         this.allowDdl = allowDdl;
         this.timeoutSeconds = Math.max(1, timeoutSeconds);
     }
@@ -43,17 +46,19 @@ public class DatabaseWriteService {
         List<Object> args = parameters == null ? List.of() : parameters;
         try (Connection connection = dataSource.getConnection()) {
             // Clear the read-only session flag so the statement can modify data.
-            connection.setReadOnly(false);
-            // Each tool call is a single statement, so autocommit is safe.
-            connection.setAutoCommit(true);
-            // RETURN_GENERATED_KEYS lets INSERTs report their auto-increment ids.
-            try (PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            dialect.prepareWrite(connection);
+            boolean returnKeys = dialect.supportsGeneratedKeys() && sqlGuard.isInsert(sql);
+            try (PreparedStatement statement = returnKeys
+                    ? connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
+                    : connection.prepareStatement(sql)) {
                 statement.setQueryTimeout(timeoutSeconds);
                 bindParameters(statement, args);
                 int affectedRows = statement.executeUpdate();
                 Map<String, Object> result = new LinkedHashMap<>();
                 result.put("affectedRows", affectedRows);
-                collectGeneratedKeys(statement, result);
+                if (returnKeys) {
+                    collectGeneratedKeys(statement, result);
+                }
                 return result;
             }
         }
@@ -68,13 +73,13 @@ public class DatabaseWriteService {
             throw new IllegalArgumentException("The DDL tool is disabled (dbmcp.write.allow-ddl=false).");
         }
         sqlGuard.validateDdl(sql);
-        // DDL takes no bind parameters; MySQL commits it implicitly.
-        try (Connection connection = dataSource.getConnection();
-             Statement statement = connection.createStatement()) {
-            connection.setReadOnly(false);
-            statement.setQueryTimeout(timeoutSeconds);
-            statement.execute(sql);
-            return Map.of("success", true);
+        try (Connection connection = dataSource.getConnection()) {
+            dialect.prepareWrite(connection);
+            try (Statement statement = connection.createStatement()) {
+                statement.setQueryTimeout(timeoutSeconds);
+                statement.execute(sql);
+                return Map.of("success", true);
+            }
         }
         catch (SQLException ex) {
             throw databaseFailure("DDL execution failed", ex);

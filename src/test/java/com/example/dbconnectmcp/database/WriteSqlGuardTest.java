@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class WriteSqlGuardTest {
 
@@ -58,5 +60,28 @@ class WriteSqlGuardTest {
     void rejectsBlankAndMalformedSql() {
         assertThrows(IllegalArgumentException.class, () -> guard.validateDml("   "));
         assertThrows(IllegalArgumentException.class, () -> guard.validateDml("this is not sql"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "INSERT INTO [dbo].[users] ([name]) VALUES (?)",
+            "INSERT INTO users (id, name) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name",
+            "MERGE INTO users u USING source_users s ON (u.id = s.id) WHEN MATCHED THEN UPDATE SET u.name = s.name WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name)",
+            "MERGE INTO users AS u USING source_users AS s ON u.id = s.id WHEN MATCHED THEN UPDATE SET name = s.name;",
+            "INSERT INTO default_catalog.demo.users (id, name) VALUES (?, ?)"
+    })
+    void acceptsDmlAcrossSupportedDatabases(String sql) {
+        assertDoesNotThrow(() -> guard.validateDml(sql));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "INSERT INTO users (name) VALUES (?) RETURNING id",
+            "INSERT INTO users (name) OUTPUT INSERTED.id VALUES (?)",
+            "UPDATE users SET name = ? RETURNING id",
+            "DELETE FROM users OUTPUT DELETED.id"
+    })
+    void rejectsResultReturningDmlBeforeItCanAutocommit(String sql) {
+        assertThrows(IllegalArgumentException.class, () -> guard.validateDml(sql));
     }
 }

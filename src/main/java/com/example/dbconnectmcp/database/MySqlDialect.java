@@ -3,7 +3,7 @@ package com.example.dbconnectmcp.database;
 import org.springframework.stereotype.Component;
 
 /**
- * MySQL adapter; the only dialect implemented in this version.
+ * MySQL adapter. MySQL uses the catalog for its database namespace.
  */
 @Component
 public class MySqlDialect implements DatabaseDialect {

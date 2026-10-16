@@ -3,17 +3,22 @@
     {
       "name": "dbmcp.database.url",
       "type": "java.lang.String",
-      "description": "MySQL JDBC URL shared by the read and write tools; must start with jdbc:mysql:."
+      "description": "JDBC URL shared by read and write tools: jdbc:mysql:, jdbc:oracle:, jdbc:sqlserver:, jdbc:postgresql:, or jdbc:starrocks:."
     },
     {
       "name": "dbmcp.database.username",
       "type": "java.lang.String",
-      "description": "MySQL account shared by the read and write tools; use a least-privilege account."
+      "description": "Database account shared by read and write tools; use a least-privilege account."
     },
     {
       "name": "dbmcp.database.password",
       "type": "java.lang.String",
-      "description": "MySQL password."
+      "description": "Database password."
+    },
+    {
+      "name": "dbmcp.database.schema",
+      "type": "java.lang.String",
+      "description": "Optional metadata schema (Oracle owner, SQL Server/PostgreSQL schema, StarRocks database). Defaults to the connection's current schema. Does not change SQL name resolution; qualify SQL objects explicitly. MySQL uses the database in its URL."
     },
     {
       "name": "dbmcp.database.max-active",

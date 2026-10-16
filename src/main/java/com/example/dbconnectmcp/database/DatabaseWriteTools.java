@@ -20,7 +20,7 @@ public class DatabaseWriteTools {
         this.service = service;
     }
 
-    @McpTool(name = "db_execute_dml", description = "Run one INSERT, UPDATE, DELETE, MERGE, or UPSERT statement; bind values with ? placeholders and the parameters argument. Returns the affected row count, plus auto-generated keys for INSERT (at most 50).",
+    @McpTool(name = "db_execute_dml", description = "Run one INSERT, UPDATE, DELETE, MERGE, or UPSERT supported by the configured database; use ? placeholders and parameters. Returns affected rows and, for MySQL/SQL Server INSERT, at most 50 generated keys. RETURNING/OUTPUT are not supported.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = false, destructiveHint = true, openWorldHint = false))
     public Map<String, Object> executeDml(
             @McpToolParam(description = "Single DML statement", required = true) String sql,

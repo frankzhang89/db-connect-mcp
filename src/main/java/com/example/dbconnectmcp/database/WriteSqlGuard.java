@@ -2,7 +2,6 @@ package com.example.dbconnectmcp.database;
 
 import java.util.regex.Pattern;
 import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.alter.Alter;
 import net.sf.jsqlparser.statement.alter.RenameTableStatement;
@@ -38,6 +37,16 @@ public class WriteSqlGuard {
                 || statement instanceof Merge || statement instanceof Upsert)) {
             throw new IllegalArgumentException("The DML tool only accepts INSERT, UPDATE, DELETE, MERGE, or UPSERT statements.");
         }
+        if ((statement instanceof Insert insert && (insert.getReturningClause() != null || insert.getOutputClause() != null))
+                || (statement instanceof Update update && (update.getReturningClause() != null || update.getOutputClause() != null))
+                || (statement instanceof Delete delete && (delete.getReturningClause() != null || delete.getOutputClause() != null))
+                || (statement instanceof Merge merge && (merge.getReturningClause() != null || merge.getOutputClause() != null))) {
+            throw new IllegalArgumentException("RETURNING and OUTPUT clauses are not supported by the DML tool.");
+        }
+    }
+
+    public boolean isInsert(String sql) {
+        return parseSingleStatement(sql) instanceof Insert;
     }
 
     public void validateDdl(String sql) {
@@ -55,15 +64,19 @@ public class WriteSqlGuard {
         if (sql == null || sql.isBlank() || sql.length() > 20_000) {
             throw new IllegalArgumentException("SQL must not be empty and must not exceed 20000 characters.");
         }
-        // Single statement only: no semicolons and no comments of any style.
-        if (sql.indexOf(';') >= 0 || sql.contains("--") || sql.contains("/*") || sql.contains("#")) {
+        // SQL Server MERGE requires a terminator; allow one trailing semicolon.
+        String body = sql.stripTrailing();
+        if (body.endsWith(";")) {
+            body = body.substring(0, body.length() - 1);
+        }
+        if (body.indexOf(';') >= 0 || sql.contains("--") || sql.contains("/*") || sql.contains("#")) {
             throw new IllegalArgumentException("Only a single comment-free statement is allowed.");
         }
         if (FORBIDDEN.matcher(sql).find()) {
             throw new IllegalArgumentException("The statement contains disallowed operations.");
         }
         try {
-            return CCJSqlParserUtil.parse(sql);
+            return SqlParser.parse(sql);
         }
         catch (JSQLParserException ex) {
             throw new IllegalArgumentException("The SQL could not be parsed and was rejected.");
