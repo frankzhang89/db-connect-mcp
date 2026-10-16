@@ -1,6 +1,29 @@
 {
   "properties": [
     {
+      "name": "dbmcp.auth.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Require a shared Bearer token on all MCP HTTP requests. Default true; set false explicitly to disable authentication.",
+      "defaultValue": true
+    },
+    {
+      "name": "dbmcp.auth.token",
+      "type": "java.lang.String",
+      "description": "Shared Bearer token configured directly in server YAML. Required and non-placeholder when authentication is enabled; never logged or returned. Restart after changing it."
+    },
+    {
+      "name": "dbmcp.switch.timeout-seconds",
+      "type": "java.lang.Integer",
+      "description": "Total deadline for startup validation or a switch, including waiting for another switch. Failed candidates are closed; late validation cannot publish. Valid range 1-300 seconds.",
+      "defaultValue": 15
+    },
+    {
+      "name": "dbmcp.switch.validation-timeout-seconds",
+      "type": "java.lang.Integer",
+      "description": "JDBC validity-check and driver login timeout; must be positive and no greater than the total switch deadline.",
+      "defaultValue": 5
+    },
+    {
       "name": "dbmcp.database.url",
       "type": "java.lang.String",
       "description": "JDBC URL shared by read and write tools: jdbc:mysql:, jdbc:oracle:, jdbc:sqlserver:, jdbc:postgresql:, or jdbc:starrocks:."

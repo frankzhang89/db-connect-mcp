@@ -12,7 +12,6 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Map;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -22,32 +21,37 @@ class DatabaseAccessTest {
 
     private final DatabaseDialectRegistry registry = new DatabaseDialectRegistry(List.of(new MySqlDialect(),
             new OracleDialect(), new SqlServerDialect(), new PostgreSqlDialect(), new StarRocksDialect()));
-    private DataSource source;
     private Connection connection;
     private DatabaseMetaData metadata;
 
     @BeforeEach
     void setUp() throws SQLException {
-        source = mock(DataSource.class);
         connection = mock(Connection.class);
         metadata = mock(DatabaseMetaData.class);
-        when(source.getConnection()).thenReturn(connection);
         when(connection.getMetaData()).thenReturn(metadata);
         when(connection.getCatalog()).thenReturn("demo");
         when(connection.getSchema()).thenReturn("app");
         when(metadata.getSearchStringEscape()).thenReturn("\\");
     }
 
-    private DatabaseProperties properties(String url, String schema) {
-        return new DatabaseProperties(url, "user", "unused", null, null, null, schema);
-    }
-
     private DatabaseReadService reads(String url, String schema) {
-        return new DatabaseReadService(source, properties(url, schema), registry, new ReadOnlySqlGuard(), 2, 10, 50);
+        return new DatabaseReadService(manager(url, schema), new ReadOnlySqlGuard(), 2, 10, 50);
     }
 
     private DatabaseWriteService writes(String url) {
-        return new DatabaseWriteService(source, new WriteSqlGuard(), properties(url, null), registry, true, 10);
+        return new DatabaseWriteService(manager(url, null), new WriteSqlGuard(), true, 10);
+    }
+
+    private DatabaseRuntimeManager manager(String url, String schema) {
+        var manager = mock(DatabaseRuntimeManager.class);
+        var lease = mock(DatabaseRuntimeManager.Lease.class);
+        when(manager.acquire()).thenReturn(lease);
+        when(lease.dialect()).thenReturn(registry.resolve(url));
+        when(lease.schema()).thenReturn(schema);
+        when(lease.datasourceId()).thenReturn("ds-test");
+        try { when(lease.connection()).thenReturn(connection); }
+        catch (SQLException error) { throw new AssertionError(error); }
+        return manager;
     }
 
     @ParameterizedTest
@@ -233,7 +237,7 @@ class DatabaseAccessTest {
 
         Statement ddl = mock(Statement.class);
         when(connection.createStatement()).thenReturn(ddl);
-        assertEquals(Map.of("success", true), writes("jdbc:postgresql://localhost/demo")
+        assertEquals(Map.of("success", true, "datasourceId", "ds-test"), writes("jdbc:postgresql://localhost/demo")
                 .executeDdl("CREATE TABLE example (id INTEGER)"));
         verify(connection, times(2)).setAutoCommit(true);
         verify(ddl).execute("CREATE TABLE example (id INTEGER)");

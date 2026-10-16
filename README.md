@@ -1,6 +1,6 @@
 # db-connect-mcp
 
-A self-hostable MCP server for one JDBC database and one Redis instance, providing both read and write tools. Supported JDBC databases are MySQL, Oracle, Microsoft SQL Server, PostgreSQL, and StarRocks. Codex connects to the MCP endpoint; it does not need the database or Redis credentials.
+A self-hostable MCP server with one current JDBC database and one Redis instance, providing read and write tools. Supported JDBC databases are MySQL, Oracle, Microsoft SQL Server, PostgreSQL, and StarRocks. Clients authenticate with a shared Bearer token and can switch the global JDBC data source without restarting. Startup database and Redis credentials stay on the server; switching requires supplying the new database credentials through a tool call.
 
 ## Requirements
 
@@ -10,7 +10,9 @@ A self-hostable MCP server for one JDBC database and one Redis instance, providi
 
 ## Configuration
 
-Set the connection addresses, usernames, and passwords under `dbmcp.database` and `spring.data.redis` in [`src/main/resources/application.yml`](src/main/resources/application.yml). Do not commit this file to a public repository after adding real credentials. Codex only needs the MCP endpoint URL. The same database account is used for both read and write tools. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` can switch it at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
+Set the initial connection under `dbmcp.database`, Redis settings under `spring.data.redis`, and a shared token under `dbmcp.auth` in [`src/main/resources/application.yml`](src/main/resources/application.yml). Do not commit this file publicly after adding real credentials. Clients need the MCP endpoint and token. Read and write tools share the current database account. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` switches its logical database at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
+
+Startup requires a usable YAML database connection. The service checks the JDBC type, establishes a connection, verifies it with `Connection.isValid`, and resolves the metadata schema before it becomes ready. Invalid credentials, unreachable databases, invalid schema settings, or validation timeouts fail startup. This does not verify permissions for every table or DDL operation. Redis connectivity is still checked when its tools are used.
 
 The JDBC URL selects the adapter automatically. All five independent drivers are included in the executable JAR:
 
@@ -28,6 +30,9 @@ For example, to select PostgreSQL:
 
 ```yaml
 dbmcp:
+  auth:
+    enabled: true
+    token: "replace-with-a-random-long-token"
   database:
     url: jdbc:postgresql://db-host:5432/appdb
     username: app_user
@@ -41,11 +46,55 @@ Unquoted table/schema names follow the driver's identifier case rules (uppercase
 
 StarRocks uses its own `com.starrocks:starrocks-connector-j` driver and `jdbc:starrocks:` URL; it does not route through the MySQL adapter. The URL path contains **catalog.database**, and the FE query port defaults to `9030`. The driver's catalog and schema APIs represent these two levels separately. See the [official StarRocks driver documentation](https://docs.starrocks.io/docs/integrations/JDBC_driver/).
 
-One server process still connects to **one** configured JDBC database. To expose several database connections simultaneously, run separate server processes with distinct configurations and ports.
+One server process has **one current global JDBC data source**, shared by every MCP client. Old pools exist temporarily while operations acquired before a switch finish. There is no session isolation or `expectedDatasourceId` parameter. Use separate server processes if clients need independent database targets.
 
-`application.yml` is packaged inside the JAR. After changing the connection settings, stop the running server, rebuild the JAR, and start it again.
+`application.yml` is packaged inside the JAR. Editing this packaged configuration requires rebuilding and restarting. Use `db_switch_datasource` for a runtime database change. Runtime switches never modify YAML or other configuration files, and restart restores the YAML connection.
 
-Credentials stored in `application.yml` can be read by any process with access to the project files, including Codex if it has that access. MCP tools do not return credentials.
+Credentials and tokens in `application.yml` are readable by processes with access to the project or JAR. They are not included in tool results or application diagnostic objects. Database credentials supplied to the switch tool may be retained in the MCP client's tool history; the server cannot control client-side recording.
+
+## Shared Bearer authentication
+
+Authentication defaults to enabled even when `dbmcp.auth.enabled` is omitted. Set `dbmcp.auth.token` directly in server YAML to a randomly generated long token (for example, 32 random bytes encoded as 64 hexadecimal characters). This configuration does not depend on an environment variable. The example `replace-with-a-random-long-token` is deliberately rejected; replace it before starting. A missing, blank, placeholder, or malformed token fails startup. Changing the token requires restarting the server and updating clients.
+
+Configure the MCP client to send this header on **every** HTTP request, including initialization, tool discovery, tool calls, and session requests:
+
+```http
+Authorization: Bearer <the-token-from-server-yaml>
+```
+
+The configured Streamable HTTP MCP endpoint and its subpaths are protected for all HTTP methods. Missing or invalid credentials receive HTTP `401` with `WWW-Authenticate: Bearer`, before any tool executes. Session IDs and URL query parameters do not replace this header. The token grants access to all JDBC and Redis tools; there are no per-user roles, OAuth login, issuance, expiry, or refresh flows. Explicitly setting `dbmcp.auth.enabled: false` disables this check.
+
+## Switch the JDBC database without restarting
+
+Call `db_switch_datasource` with:
+
+```json
+{
+  "jdbcUrl": "jdbc:postgresql://db-host:5432/appdb",
+  "username": "app_user",
+  "password": "database-password",
+  "schema": "public"
+}
+```
+
+`jdbcUrl`, `username`, and `password` are required; an empty password is valid. `schema` is optional and affects metadata discovery only. Omitting it uses the new connection's default schema, never the previous target's schema. Supported JDBC prefixes are the same five listed above, and StarRocks continues to use its independent driver.
+
+The service creates and validates a candidate pool while the current data source remains usable. Only successful validation publishes the new pool, dialect, schema, and `datasourceId` together. Subsequent operations use the new target; operations that already acquired the old target finish there. The old pool is closed after its last operation releases it. Multiple switches are serialized. A failed or timed-out candidate is closed, and late validation completion cannot replace the current data source. Repeating the same URL still creates a fresh pool, so changed credentials take effect.
+
+A successful response includes `success`, `previousDatasourceId`, `datasourceId`, `databaseType`, and catalog/schema when available. Existing database tools also return the ID they actually used. IDs are diagnostic only: they do not pin a caller's subsequent operations to that database. Failed switches return a tool error with a code such as `INVALID_ARGUMENT`, `AUTHENTICATION_FAILED`, `CONNECTION_FAILED`, `VALIDATION_FAILED`, or `VALIDATION_TIMEOUT`, without driver messages or credentials.
+
+Optional server-wide timeouts:
+
+```yaml
+dbmcp:
+  switch:
+    timeout-seconds: 15
+    validation-timeout-seconds: 5
+```
+
+The total deadline includes waiting for another switch and validation, and also applies during startup. The validity-check and driver login timeout must be positive and no greater than the total (maximum 300 seconds). The pool's `dbmcp.database.connection-timeout` still limits waiting to borrow a connection. Candidate cleanup can take additional driver shutdown time; a driver that ignores interruption cannot publish a late result. Driver timeout properties in JDBC URLs may affect their network behavior.
+
+Read/write limits, pool sizing, and `dbmcp.write.allow-ddl` remain server-wide settings. Switching performs no SQL writes, DDL, or migration. It does not change Redis settings. Shutdown rejects new database operations, cancels validation, and closes pools after existing operations release them.
 
 ## Build and run
 
@@ -81,19 +130,20 @@ For deployment, put `db-mcp.jar` alongside the startup scripts. `start` and `res
 
 ## Connect Codex
 
-After starting the server, add this Streamable HTTP endpoint in Codex's MCP settings:
+After starting the server, configure this Streamable HTTP endpoint and the Bearer request header in your MCP client:
 
 ```text
 http://127.0.0.1:8283/db-mcp
 ```
 
-The server listens on `127.0.0.1` by default; see [Remote deployment](#remote-deployment) to run it on a server. This version provides twelve tools:
+The listening interface comes from `server.address`; see [Remote deployment](#remote-deployment). This version provides thirteen tools:
 
 | Tool | Purpose |
 | --- | --- |
 | `db_list_tables` | List tables and views in the configured database (at most 500) |
 | `db_describe_table` | Inspect a table's columns and primary key, optionally selecting a schema |
 | `db_query` | Run one parameterized, read-only `SELECT` query |
+| `db_switch_datasource` | Validate and switch the global JDBC target without restarting; memory-only |
 | `redis_scan_keys` | Scan keys with cursor-based pagination |
 | `redis_inspect_key` | Inspect a key's type, TTL, and size |
 | `redis_read_key` | Read a limited amount of data from a string, hash, list, set, or sorted set |
@@ -108,15 +158,15 @@ The server listens on `127.0.0.1` by default; see [Remote deployment](#remote-de
 
 ## Remote deployment
 
-By default the server binds to `127.0.0.1`, so only local clients can reach the endpoint. To run it on a remote server:
+Set `server.address` to `127.0.0.1` for local-only access. To run it on a remote server:
 
 1. Bind a reachable interface: set the environment variable `SERVER_ADDRESS=0.0.0.0` (all interfaces) or the server's private IP, and optionally `SERVER_PORT`. These override `server.address` and `server.port` in `application.yml`. Open the port in the firewall; the MCP endpoint is then `http://<server-host>:8283/db-mcp`.
 2. Configure `dbmcp.database` and `spring.data.redis` with addresses reachable from the server, rebuild, and restart.
-3. The MCP endpoint has **no built-in authentication** and now exposes write tools, so restrict who can reach it: allow-list client IPs in the firewall, bind a private interface, or place it behind a reverse proxy or VPN with authentication. Do not expose the endpoint to the public internet. Database and Redis credentials stay on the server; MCP clients never see them.
+3. Keep Bearer authentication enabled and use HTTPS through a TLS reverse proxy for remote access. The token grants access to all write and data-source-switch tools, so restrict network access as appropriate. Startup credentials stay on the server; clients supply new JDBC credentials only when using the switch tool.
 
 ## Write tools
 
-Read and write access share the connection and account configured under `dbmcp.database`, so the write tools are always registered alongside the read tools. `dbmcp.write.allow-ddl` (default `true`) is the only write-specific switch; set it to `false` to reject DDL while keeping DML available.
+Read and write access share the current global connection and account, initially configured under `dbmcp.database`. Write tools are always registered alongside read tools. `dbmcp.write.allow-ddl` (default `true`) is the only write-specific switch; set it to `false` to reject DDL while keeping DML available. Runtime database switches do not change this setting.
 
 - `db_execute_dml` runs one parameterized `INSERT`, `UPDATE`, `DELETE`, `MERGE`, or `UPSERT` statement supported by the target database and returns the affected row count. MySQL and SQL Server INSERTs also return generated keys (at most 50); other DML statements do not request keys. Oracle, PostgreSQL, and StarRocks currently return only affected rows. Oracle's generic JDBC generated-key flag returns ROWID, and PostgreSQL's generic flag may return whole rows, so these are not mislabeled as generated primary keys. `RETURNING` and `OUTPUT` clauses are rejected before execution.
 - `db_execute_ddl` runs one `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, or `RENAME` statement.
@@ -138,6 +188,6 @@ mvn test
 mvn package
 ```
 
-Unit tests load all five real JDBC drivers and check URL acceptance, Spring adapter registration, schema/name handling, per-dialect read behavior, parameter binding, row limits, generated-key policy, and SQL guards without connecting to a database. They do not establish compatibility with a live server.
+Tests load all five real JDBC drivers and check URL acceptance, schema/name handling, read/write behavior, row limits, and SQL guards. Additional tests cover switch publication, concurrent leases, retirement, timeout/late completion, shutdown, authentication defaults, HTTP methods, and redaction. HTTP integration tests start the actual application against an in-process JDBC test double, perform MCP initialization and tool calls, check failed-switch rollback and restart-to-YAML behavior, and assert that configuration files remain unchanged. They do not establish compatibility with live database servers.
 
 After starting the server, use Codex's `/mcp` command to inspect the tool list, then try `db_list_tables`, `db_describe_table`, `db_query`, and the Redis tools with a least-privilege account. For each target database, verify a parameterized SELECT, metadata in the expected schema, and permitted DML/DDL in a disposable test schema. Use `SELECT 1 FROM dual` for Oracle and `SELECT 1` for the other engines. Real data access requires reachable services and credentials.

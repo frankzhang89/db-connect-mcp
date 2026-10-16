@@ -17,4 +17,7 @@ public record DatabaseProperties(
         Integer minIdle,
         Long connectionTimeout,
         String schema) {
+
+    @Override
+    public String toString() { return "DatabaseProperties[connection=redacted]"; }
 }

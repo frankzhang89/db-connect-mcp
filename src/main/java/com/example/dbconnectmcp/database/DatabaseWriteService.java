@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -23,19 +22,16 @@ public class DatabaseWriteService {
     // Cap on the auto-generated keys returned for INSERT statements.
     private static final int MAX_GENERATED_KEYS = 50;
 
-    private final DataSource dataSource;
+    private final DatabaseRuntimeManager manager;
     private final WriteSqlGuard sqlGuard;
-    private final DatabaseDialect dialect;
     private final boolean allowDdl;
     private final int timeoutSeconds;
 
-    public DatabaseWriteService(DataSource dataSource, WriteSqlGuard sqlGuard,
-            DatabaseProperties properties, DatabaseDialectRegistry registry,
+    public DatabaseWriteService(DatabaseRuntimeManager manager, WriteSqlGuard sqlGuard,
             @Value("${dbmcp.write.allow-ddl:true}") boolean allowDdl,
             @Value("${dbmcp.query.timeout-seconds:10}") int timeoutSeconds) {
-        this.dataSource = dataSource;
+        this.manager = manager;
         this.sqlGuard = sqlGuard;
-        this.dialect = registry.resolve(properties.url());
         this.allowDdl = allowDdl;
         this.timeoutSeconds = Math.max(1, timeoutSeconds);
     }
@@ -44,7 +40,8 @@ public class DatabaseWriteService {
         // Whitelist validation happens before any connection is opened.
         sqlGuard.validateDml(sql);
         List<Object> args = parameters == null ? List.of() : parameters;
-        try (Connection connection = dataSource.getConnection()) {
+        try (var lease = manager.acquire(); Connection connection = lease.connection()) {
+            DatabaseDialect dialect = lease.dialect();
             // Clear the read-only session flag so the statement can modify data.
             dialect.prepareWrite(connection);
             boolean returnKeys = dialect.supportsGeneratedKeys() && sqlGuard.isInsert(sql);
@@ -55,6 +52,7 @@ public class DatabaseWriteService {
                 bindParameters(statement, args);
                 int affectedRows = statement.executeUpdate();
                 Map<String, Object> result = new LinkedHashMap<>();
+                result.put("datasourceId", lease.datasourceId());
                 result.put("affectedRows", affectedRows);
                 if (returnKeys) {
                     collectGeneratedKeys(statement, result);
@@ -73,12 +71,12 @@ public class DatabaseWriteService {
             throw new IllegalArgumentException("The DDL tool is disabled (dbmcp.write.allow-ddl=false).");
         }
         sqlGuard.validateDdl(sql);
-        try (Connection connection = dataSource.getConnection()) {
-            dialect.prepareWrite(connection);
+        try (var lease = manager.acquire(); Connection connection = lease.connection()) {
+            lease.dialect().prepareWrite(connection);
             try (Statement statement = connection.createStatement()) {
                 statement.setQueryTimeout(timeoutSeconds);
                 statement.execute(sql);
-                return Map.of("success", true);
+                return Map.of("success", true, "datasourceId", lease.datasourceId());
             }
         }
         catch (SQLException ex) {

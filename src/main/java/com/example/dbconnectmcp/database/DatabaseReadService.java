@@ -12,11 +12,11 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import static com.example.dbconnectmcp.database.DatabaseMetadata.*;
 
 /**
  * Read-only database access. Every operation borrows a pooled connection,
@@ -29,37 +29,37 @@ public class DatabaseReadService {
     // Hard cap for db_list_tables responses.
     private static final int MAX_TABLES = 500;
 
-    private final DataSource dataSource;
-    private final DatabaseDialect dialect;
+    private final DatabaseRuntimeManager manager;
     private final ReadOnlySqlGuard sqlGuard;
     private final int maxRows;
     private final int timeoutSeconds;
     private final int maxCellChars;
-    private final String configuredSchema;
 
-    public DatabaseReadService(DataSource dataSource, DatabaseProperties properties,
-            DatabaseDialectRegistry registry, ReadOnlySqlGuard sqlGuard,
+    public DatabaseReadService(DatabaseRuntimeManager manager, ReadOnlySqlGuard sqlGuard,
             @Value("${dbmcp.query.max-rows:100}") int maxRows,
             @Value("${dbmcp.query.timeout-seconds:10}") int timeoutSeconds,
             @Value("${dbmcp.query.max-cell-chars:4000}") int maxCellChars) {
-        this.dataSource = dataSource;
-        this.dialect = registry.resolve(properties.url());
+        this.manager = manager;
         this.sqlGuard = sqlGuard;
         this.maxRows = Math.max(1, maxRows);
         this.timeoutSeconds = Math.max(1, timeoutSeconds);
         this.maxCellChars = Math.max(1, maxCellChars);
-        this.configuredSchema = properties.schema();
     }
 
     public Map<String, Object> listTables() {
         List<Map<String, String>> tables = new ArrayList<>();
         boolean truncated = false;
-        try (Connection connection = dataSource.getConnection()) {
+        String datasourceId;
+        String databaseType;
+        try (var lease = manager.acquire(); Connection connection = lease.connection()) {
+            DatabaseDialect dialect = lease.dialect();
+            datasourceId = lease.datasourceId();
+            databaseType = dialect.name();
             dialect.prepareRead(connection);
             // JDBC metadata lists tables and views without touching user data.
             DatabaseMetaData metadata = connection.getMetaData();
             try (ResultSet result = metadata.getTables(dialect.catalog(connection),
-                    escapePattern(schema(connection, metadata, null), metadata), "%", new String[] {"TABLE", "VIEW"})) {
+                    escapePattern(schema(connection, dialect, lease.schema(), null), metadata), "%", new String[] {"TABLE", "VIEW"})) {
                 while (result.next()) {
                     if (tables.size() >= MAX_TABLES) {
                         truncated = true;
@@ -81,7 +81,7 @@ public class DatabaseReadService {
         catch (SQLException ex) {
             throw databaseFailure(ex);
         }
-        return Map.of("databaseType", dialect.name(), "tables", tables, "truncated", truncated);
+        return Map.of("datasourceId", datasourceId, "databaseType", databaseType, "tables", tables, "truncated", truncated);
     }
 
     public Map<String, Object> describeTable(String tableName) {
@@ -93,11 +93,13 @@ public class DatabaseReadService {
         List<Map<String, Object>> columns = new ArrayList<>();
         List<String> primaryKeys = new ArrayList<>();
         Map<String, Object> description = new LinkedHashMap<>();
-        try (Connection connection = dataSource.getConnection()) {
+        try (var lease = manager.acquire(); Connection connection = lease.connection()) {
+            DatabaseDialect dialect = lease.dialect();
+            description.put("datasourceId", lease.datasourceId());
             dialect.prepareRead(connection);
             DatabaseMetaData metadata = connection.getMetaData();
             String catalog = dialect.catalog(connection);
-            String schema = schema(connection, metadata, schemaName);
+            String schema = schema(connection, dialect, lease.schema(), schemaName);
             String exactTable = normalizeIdentifier(tableName, metadata);
             String actualTable = exactTable;
             boolean caseInsensitive = metadata.storesMixedCaseIdentifiers() && !metadata.supportsMixedCaseIdentifiers();
@@ -151,7 +153,10 @@ public class DatabaseReadService {
         List<Map<String, Object>> rows = new ArrayList<>();
         List<String> columnNames = new ArrayList<>();
         boolean truncated = false;
-        try (Connection connection = dataSource.getConnection()) {
+        String datasourceId;
+        try (var lease = manager.acquire(); Connection connection = lease.connection()) {
+            DatabaseDialect dialect = lease.dialect();
+            datasourceId = lease.datasourceId();
             dialect.beginRead(connection);
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setQueryTimeout(timeoutSeconds);
@@ -192,54 +197,8 @@ public class DatabaseReadService {
         catch (SQLException ex) {
             throw databaseFailure(ex);
         }
-        return Map.of("columns", columnNames, "rows", rows, "rowCount", rows.size(),
+        return Map.of("datasourceId", datasourceId, "columns", columnNames, "rows", rows, "rowCount", rows.size(),
                 "truncated", truncated, "maxRows", rowLimit);
-    }
-
-    private String schema(Connection connection, DatabaseMetaData metadata, String requestedSchema) throws SQLException {
-        String selected = requestedSchema == null || requestedSchema.isBlank() ? configuredSchema : requestedSchema;
-        if (selected != null && !selected.isBlank()) {
-            return normalizeIdentifier(selected, metadata);
-        }
-        String current = dialect.schemaPattern(connection);
-        if ((current == null || current.isBlank()) && !(dialect instanceof MySqlDialect)) {
-            throw new IllegalArgumentException("No current schema; configure dbmcp.database.schema for metadata discovery.");
-        }
-        return current;
-    }
-
-    private static void validateIdentifier(String name) {
-        if (name == null || name.isBlank() || name.length() > 1024) {
-            throw new IllegalArgumentException("The identifier must not be empty and must not exceed 1024 characters.");
-        }
-    }
-
-    private static String normalizeIdentifier(String name, DatabaseMetaData metadata) throws SQLException {
-        validateIdentifier(name);
-        if (name.length() > 2 && name.startsWith("\"") && name.endsWith("\"")) {
-            return name.substring(1, name.length() - 1).replace("\"\"", "\"");
-        }
-        if (name.length() > 2 && name.startsWith("`") && name.endsWith("`")) {
-            return name.substring(1, name.length() - 1).replace("``", "`");
-        }
-        if (name.length() > 2 && name.startsWith("[") && name.endsWith("]")) {
-            return name.substring(1, name.length() - 1).replace("]]", "]");
-        }
-        if (metadata.storesUpperCaseIdentifiers()) {
-            return name.toUpperCase(Locale.ROOT);
-        }
-        return metadata.storesLowerCaseIdentifiers() ? name.toLowerCase(Locale.ROOT) : name;
-    }
-
-    private static String escapePattern(String name, DatabaseMetaData metadata) throws SQLException {
-        if (name == null) {
-            return null;
-        }
-        String escape = metadata.getSearchStringEscape();
-        if (escape == null || escape.isEmpty()) {
-            return name;
-        }
-        return name.replace(escape, escape + escape).replace("_", escape + "_").replace("%", escape + "%");
     }
 
     /**

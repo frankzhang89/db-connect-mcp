@@ -7,8 +7,8 @@ import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
 
 /**
- * Write tools share the connection and account configured under
- * {@code dbmcp.database}. DDL can be turned off with
+ * Write tools use the same current global JDBC target as the read tools.
+ * DDL can be turned off with
  * {@code dbmcp.write.allow-ddl=false}; DML is always available.
  */
 @Component

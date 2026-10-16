@@ -7,7 +7,7 @@ import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
 
 /**
- * Read tools for the configured JDBC database, exposed over MCP.
+ * Read tools lease the current global JDBC target for the whole operation.
  */
 @Component
 public class DatabaseTools {
