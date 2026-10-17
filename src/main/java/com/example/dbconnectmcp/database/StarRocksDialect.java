@@ -4,6 +4,10 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import org.springframework.stereotype.Component;
 
+/**
+ * Uses the native StarRocks driver without relying on MySQL session transaction SQL
+ * or generated-key support. SQL guards and account permissions still constrain access.
+ */
 @Component
 public class StarRocksDialect implements DatabaseDialect {
 

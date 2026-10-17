@@ -15,7 +15,12 @@ import org.springframework.jdbc.datasource.AbstractDataSource;
 
 import static com.example.dbconnectmcp.database.DatabaseSwitchException.Code.*;
 
+/**
+ * Builds unpublished JDBC targets, validates real connections, and enables pool
+ * prefill after validation. Publication and target lifetime belong to the manager.
+ */
 public class DatabasePoolFactory {
+    /** Safe metadata returned to clients without including the JDBC URL or credentials. */
     public record Namespace(String catalog, String schema) { }
 
     private final DatabaseProperties poolSettings;
@@ -28,6 +33,7 @@ public class DatabasePoolFactory {
         this.registry = registry;
     }
 
+    /** Creates an independent candidate; constructing a pool does not prove connectivity. */
     DatabaseTarget create(DatabaseConnectionSettings settings) {
         DatabaseDialect dialect;
         try {
@@ -35,6 +41,8 @@ public class DatabasePoolFactory {
                     || settings.password() == null || settings.jdbcUrl() == null || settings.jdbcUrl().length() > 8192) {
                 throw new IllegalArgumentException();
             }
+            // Driver selection comes from supported URL prefixes rather than a
+            // caller-supplied class name. Schema validation here checks input shape.
             dialect = registry.resolve(settings.jdbcUrl());
             if (settings.schema() != null && !settings.schema().isBlank()) {
                 DatabaseMetadata.validateIdentifier(settings.schema());
@@ -53,12 +61,19 @@ public class DatabasePoolFactory {
             config.setMinimumIdle(0);
             config.setConnectionTimeout(poolSettings.connectionTimeout() == null ? 5000 : poolSettings.connectionTimeout());
             config.setValidationTimeout(timeouts.validationTimeoutSeconds() * 1000L);
+            // Start without synchronous connectivity checks; validate() performs the
+            // explicit check in the manager's cancellable validation task instead.
             config.setInitializationFailTimeout(-1);
             return new DatabaseTarget(new HikariDataSource(config), dialect, settings.schema());
         }
         catch (Exception error) { throw new DatabaseSwitchException(CONNECTION_FAILED); }
     }
 
+    /**
+     * Borrows a real connection and resolves its metadata namespace before publication.
+     * A configured schema is normalized for metadata use; this does not issue SET SCHEMA
+     * or prove that the schema exists or that every later query will be permitted.
+     */
     Namespace validate(DatabaseTarget target) {
         try (Connection connection = target.pool.getConnection()) {
             if (!connection.isValid(timeouts.validationTimeoutSeconds())) {
@@ -80,6 +95,7 @@ public class DatabasePoolFactory {
         catch (IllegalArgumentException error) { throw new DatabaseSwitchException(VALIDATION_FAILED); }
     }
 
+    /** Restores the shared idle-size policy; it does not publish the target itself. */
     void activate(DatabaseTarget target) {
         int desired = poolSettings.minIdle() == null ? target.pool.getMaximumPoolSize() : poolSettings.minIdle();
         target.pool.setMinimumIdle(Math.min(desired, target.pool.getMaximumPoolSize()));
@@ -99,10 +115,14 @@ public class DatabasePoolFactory {
 
         @Override
         public Connection getConnection() throws SQLException {
+            // Keep credentials in the driver call rather than HikariConfig, whose
+            // diagnostic output may otherwise include connection configuration.
             Properties properties = new Properties();
             properties.setProperty("user", settings.username());
             properties.setProperty("password", settings.password());
             String url = settings.jdbcUrl();
+            // Drivers use different names and units for their connection timeouts.
+            // These complement Future cancellation when a driver blocks in network I/O.
             if (url.startsWith("jdbc:oracle:")) {
                 properties.setProperty("oracle.net.CONNECT_TIMEOUT", Integer.toString(loginSeconds * 1000));
                 properties.setProperty("oracle.net.OUTBOUND_CONNECT_TIMEOUT", Integer.toString(loginSeconds * 1000));
@@ -152,6 +172,8 @@ public class DatabasePoolFactory {
         public int getLoginTimeout() { return loginSeconds; }
 
         private static SQLException sanitized(SQLException error) {
+            // Preserve only classification fields needed by DatabaseSwitchException;
+            // original messages and causes may contain addresses or credentials.
             String state = error.getSQLState();
             if (state == null || !state.matches("[A-Z0-9]{5}")) { state = "08001"; }
             if (error instanceof SQLFeatureNotSupportedException) {

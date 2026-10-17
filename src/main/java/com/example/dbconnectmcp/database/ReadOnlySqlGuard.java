@@ -26,6 +26,7 @@ public class ReadOnlySqlGuard {
                     + "next\\s+value\\s+for\\b|\\w+\\s*\\.\\s*nextval\\b|updlock\\b|xlock\\b)|:="
     );
 
+    /** Rejects unsupported syntax before a service acquires any data source lease. */
     public void validate(String sql) {
         // Reject empty or oversized input.
         if (sql == null || sql.isBlank() || sql.length() > 20_000) {

@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
 
+/** Registers authentication early and exposes the verifier as a database startup dependency. */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(BearerAuthProperties.class)
 public class McpAuthConfiguration {
@@ -20,6 +21,7 @@ public class McpAuthConfiguration {
     public FilterRegistrationBean<McpBearerFilter> mcpBearerFilter(BearerTokenVerifier verifier,
             @Value("${spring.ai.mcp.server.streamable-http.mcp-endpoint:/mcp}") String endpoint) {
         var registration = new FilterRegistrationBean<>(new McpBearerFilter(verifier, endpoint));
+        // Register broadly; the filter itself matches the normalized configured endpoint.
         registration.addUrlPatterns("/*");
         registration.setDispatcherTypes(DispatcherType.REQUEST, DispatcherType.ASYNC, DispatcherType.ERROR, DispatcherType.FORWARD);
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE);

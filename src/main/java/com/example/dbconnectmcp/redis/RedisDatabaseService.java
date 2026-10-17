@@ -31,6 +31,8 @@ public class RedisDatabaseService implements DisposableBean {
     private final ConcurrentHashMap<Integer, LettuceConnectionFactory> factories = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, StringRedisTemplate> templates = new ConcurrentHashMap<>();
 
+    // Global selection shared by all clients. Volatile publishes a successful choice
+    // to later calls; it does not serialize concurrent selectDatabase() validations.
     private volatile int currentDb;
 
     public RedisDatabaseService(
@@ -56,10 +58,19 @@ public class RedisDatabaseService implements DisposableBean {
         return currentDb;
     }
 
+    /**
+     * Captures the current index once and returns its database-specific template.
+     * A service keeps this template for its operation, even if selection changes later.
+     */
     public StringRedisTemplate currentTemplate() {
         return templateFor(currentDb);
     }
 
+    /**
+     * Switches the Redis logical database on the same host, independently of JDBC.
+     * Previously created templates stay cached for reuse and close during shutdown;
+     * unlike JDBC targets, they are not retired after each selection.
+     */
     public Map<String, Object> selectDatabase(Integer db) {
         if (db == null || db < 0 || db >= maxDatabases) {
             throw new IllegalArgumentException("The database index must be between 0 and " + (maxDatabases - 1) + ".");
@@ -74,6 +85,8 @@ public class RedisDatabaseService implements DisposableBean {
         catch (RuntimeException ex) {
             throw new IllegalStateException("Failed to switch to database " + db + ": " + ex.getMessage());
         }
+        // Publish only after PING succeeds. Concurrent selections can validate in
+        // parallel; whichever assignment happens last determines the global selection.
         currentDb = db;
         return Map.of("database", db);
     }
@@ -84,6 +97,8 @@ public class RedisDatabaseService implements DisposableBean {
     }
 
     private StringRedisTemplate createTemplate(int db) {
+        // Bind a separate connection factory to this index instead of issuing SELECT
+        // on a shared connection that other operations may already be using.
         RedisStandaloneConfiguration configuration = new RedisStandaloneConfiguration(host, port);
         configuration.setDatabase(db);
         // Apply the shared credentials only when they are actually set; an

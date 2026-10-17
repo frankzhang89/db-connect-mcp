@@ -30,6 +30,7 @@ public class WriteSqlGuard {
     private static final Pattern FORBIDDEN = Pattern.compile(
             "(?is)\\b(?:into\\s+(?:out|dump)file|load\\s+data|prepare\\s+|handler\\s+)|:=");
 
+    /** Accepts supported row-changing statements whose results fit the update-count API. */
     public void validateDml(String sql) {
         Statement statement = parseSingleStatement(sql);
         // Only row-modifying statements are accepted for the DML tool.
@@ -37,6 +38,7 @@ public class WriteSqlGuard {
                 || statement instanceof Merge || statement instanceof Upsert)) {
             throw new IllegalArgumentException("The DML tool only accepts INSERT, UPDATE, DELETE, MERGE, or UPSERT statements.");
         }
+        // Returning row sets require a different execution/result contract from executeUpdate().
         if ((statement instanceof Insert insert && (insert.getReturningClause() != null || insert.getOutputClause() != null))
                 || (statement instanceof Update update && (update.getReturningClause() != null || update.getOutputClause() != null))
                 || (statement instanceof Delete delete && (delete.getReturningClause() != null || delete.getOutputClause() != null))
@@ -49,6 +51,7 @@ public class WriteSqlGuard {
         return parseSingleStatement(sql) instanceof Insert;
     }
 
+    /** Checks statement type; the service separately enforces the configurable DDL switch. */
     public void validateDdl(String sql) {
         Statement statement = parseSingleStatement(sql);
         // Only schema-changing statements are accepted for the DDL tool.

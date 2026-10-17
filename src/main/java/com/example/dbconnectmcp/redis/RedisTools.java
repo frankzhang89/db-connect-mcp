@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
  * Redis tools exposed over MCP. All of them operate on the database tracked
  * by {@link RedisDatabaseService}, so {@code redis_select_db} affects reads
  * and writes alike.
+ * Redis selection changes a logical database index on the configured host; JDBC
+ * target replacement is exposed separately by DatabaseConnectionTools.
  */
 @Component
 public class RedisTools {

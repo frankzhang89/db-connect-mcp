@@ -19,6 +19,8 @@ import org.springframework.stereotype.Service;
 /**
  * All reads run against the currently selected database tracked by
  * {@link RedisDatabaseService}, so they follow {@code redis_select_db}.
+ * Each operation captures one template so all its commands use the same database.
+ * Multiple commands are not a transaction; key contents may change between them.
  */
 @Service
 public class RedisReadService {
@@ -38,6 +40,10 @@ public class RedisReadService {
         this.maxValueChars = Math.max(1, maxValueChars);
     }
 
+    /**
+     * Returns one SCAN page. COUNT is a work hint, not a strict result cap; callers
+     * must keep the same database selected when continuing with the returned cursor.
+     */
     public Map<String, Object> scanKeys(String pattern, String cursor, Integer requestedCount) {
         return safely(() -> {
             // Every call reads through the template of the currently selected database.
@@ -66,6 +72,7 @@ public class RedisReadService {
         });
     }
 
+    /** Reads type, TTL, and a type-specific size without fetching the complete value. */
     public Map<String, Object> inspectKey(String key) {
         return safely(() -> {
             StringRedisTemplate redis = databases.currentTemplate();
@@ -95,6 +102,7 @@ public class RedisReadService {
         });
     }
 
+    /** Bounds returned collection items and value lengths; scan cursors close on exit. */
     public Map<String, Object> readKey(String key, Integer requestedItems) {
         return safely(() -> {
             StringRedisTemplate redis = databases.currentTemplate();

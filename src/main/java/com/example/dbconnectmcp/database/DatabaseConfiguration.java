@@ -20,15 +20,19 @@ public class DatabaseConfiguration {
     }
 
     @Bean(destroyMethod = "close")
+    // Reject invalid authentication configuration before attempting database access.
     @DependsOn("mcpBearerVerifier")
     public DatabaseRuntimeManager databaseRuntimeManager(DatabasePoolFactory factory, DatabaseSwitchProperties timeouts,
             DatabaseProperties properties) {
         var manager = new DatabaseRuntimeManager(factory, timeouts);
         try {
+            // Startup follows the same validation/publication path as runtime switches.
+            // The singleton is not exposed until the configured initial target works.
             manager.switchTo(new DatabaseConnectionSettings(properties.url(), properties.username(), properties.password(), properties.schema()));
             return manager;
         }
         catch (RuntimeException error) {
+            // A failed bean initialization must not leave validation workers or pools.
             manager.close();
             throw error;
         }

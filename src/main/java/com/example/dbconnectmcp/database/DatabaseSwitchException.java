@@ -26,8 +26,11 @@ public class DatabaseSwitchException extends IllegalStateException {
 
     public Code code() { return code; }
 
+    /** Classifies standard SQL states and selected vendor codes without retaining causes. */
     static DatabaseSwitchException from(SQLException error) {
         String state = error.getSQLState();
+        // SQLState class 28 denotes authorization failures; include common vendor codes
+        // for Oracle, MySQL, and SQL Server when drivers use other SQLState values.
         if ((state != null && state.startsWith("28")) || error.getErrorCode() == 1017
                 || error.getErrorCode() == 1045 || error.getErrorCode() == 18456) {
             return new DatabaseSwitchException(Code.AUTHENTICATION_FAILED);

@@ -35,6 +35,7 @@ public class RedisWriteService {
         this.maxValueChars = Math.max(1, maxValueChars);
     }
 
+    /** Applies type-specific writes and then an optional expiry using one captured template. */
     public Map<String, Object> writeKey(String key, String type, String value, List<String> values,
             Map<String, String> fields, Map<String, Double> scoreMembers, Integer ttlSeconds) {
         return safely(() -> {
@@ -86,7 +87,8 @@ public class RedisWriteService {
                 default -> throw new IllegalArgumentException(
                         "Unsupported type: " + normalizedType + "; valid types are string, list, set, hash, and zset.");
             }
-            // Optional expiry applied after a successful write.
+            // Expiry is a separate command after the write, not an atomic transaction.
+            // An invalid TTL or expiry failure does not undo data already written.
             if (ttlSeconds != null) {
                 if (ttlSeconds <= 0) {
                     throw new IllegalArgumentException("ttlSeconds must be greater than 0.");
@@ -118,7 +120,7 @@ public class RedisWriteService {
             }
             StringRedisTemplate redis = databases.currentTemplate();
             if (ttlSeconds == 0) {
-                // PERSIST removes the expiry; false means the key was missing.
+                // PERSIST removes the expiry; false means the key is missing or has no expiry.
                 Boolean persisted = redis.persist(key);
                 return Map.of("key", key, "persisted", Boolean.TRUE.equals(persisted));
             }

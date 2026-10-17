@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service;
 /**
  * Write access shares the connection pool with {@link DatabaseReadService};
  * Dialect policies prepare read sessions and restore writable sessions.
+ * A lease pins the selected target for the full statement, including generated-key
+ * retrieval; switching does not move or retry an in-progress write on another database.
  */
 @Service
 public class DatabaseWriteService {
@@ -40,6 +42,8 @@ public class DatabaseWriteService {
         // Whitelist validation happens before any connection is opened.
         sqlGuard.validateDml(sql);
         List<Object> args = parameters == null ? List.of() : parameters;
+        // Close the JDBC connection before the lease, allowing retired pools to drain
+        // only after the statement and its result resources have finished.
         try (var lease = manager.acquire(); Connection connection = lease.connection()) {
             DatabaseDialect dialect = lease.dialect();
             // Clear the read-only session flag so the statement can modify data.
@@ -71,6 +75,8 @@ public class DatabaseWriteService {
             throw new IllegalArgumentException("The DDL tool is disabled (dbmcp.write.allow-ddl=false).");
         }
         sqlGuard.validateDdl(sql);
+        // DDL follows the same target lifetime rules as reads and DML. The dialect
+        // prepares a writable session; transaction behavior remains database-specific.
         try (var lease = manager.acquire(); Connection connection = lease.connection()) {
             lease.dialect().prepareWrite(connection);
             try (Statement statement = connection.createStatement()) {

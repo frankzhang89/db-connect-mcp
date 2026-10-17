@@ -14,6 +14,8 @@ final class SqlParser {
             return CCJSqlParserUtil.parse(sql);
         }
         catch (JSQLParserException ex) {
+            // Retry bracket quoting only after ordinary parsing fails, because enabling
+            // it first can reinterpret PostgreSQL array subscripts as quoted identifiers.
             return CCJSqlParserUtil.parse(sql, parser -> parser.withSquareBracketQuotation(true));
         }
     }

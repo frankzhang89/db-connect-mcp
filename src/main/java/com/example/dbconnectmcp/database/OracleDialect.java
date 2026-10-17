@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import org.springframework.stereotype.Component;
 
+/** Oracle uses schema metadata and an explicit server-side read-only transaction. */
 @Component
 public class OracleDialect implements DatabaseDialect {
 
@@ -32,6 +33,8 @@ public class OracleDialect implements DatabaseDialect {
 
     @Override
     public void beginRead(Connection connection) throws SQLException {
+        // Start a new transaction before issuing Oracle's transaction-level read policy.
+        // DatabaseReadService rolls it back before returning the pooled connection.
         connection.setAutoCommit(false);
         try (Statement statement = connection.createStatement()) {
             statement.execute("SET TRANSACTION READ ONLY");

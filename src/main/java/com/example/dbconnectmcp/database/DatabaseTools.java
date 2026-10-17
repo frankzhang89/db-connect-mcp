@@ -8,6 +8,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Read tools lease the current global JDBC target for the whole operation.
+ * This component only adapts MCP parameters; the service owns validation, JDBC
+ * resource handling, and result limits.
  */
 @Component
 public class DatabaseTools {

@@ -22,6 +22,8 @@ import static com.example.dbconnectmcp.database.DatabaseMetadata.*;
  * Read-only database access. Every operation borrows a pooled connection,
  * applies the dialect's read policy. JDBC read-only hints and rollback are
  * additional safeguards, not a replacement for database permissions.
+ * Each call pins one target with a lease, so a concurrent switch cannot change
+ * its connection pool, dialect, or metadata schema halfway through the operation.
  */
 @Service
 public class DatabaseReadService {
@@ -51,6 +53,8 @@ public class DatabaseReadService {
         boolean truncated = false;
         String datasourceId;
         String databaseType;
+        // Resources close in reverse order: return the connection before releasing
+        // the lease that keeps its pool alive, even if the target has been retired.
         try (var lease = manager.acquire(); Connection connection = lease.connection()) {
             DatabaseDialect dialect = lease.dialect();
             datasourceId = lease.datasourceId();
@@ -93,6 +97,8 @@ public class DatabaseReadService {
         List<Map<String, Object>> columns = new ArrayList<>();
         List<String> primaryKeys = new ArrayList<>();
         Map<String, Object> description = new LinkedHashMap<>();
+        // Resolve all metadata against the same pinned target. A per-call schema
+        // override affects this description only, not the global target or SQL session.
         try (var lease = manager.acquire(); Connection connection = lease.connection()) {
             DatabaseDialect dialect = lease.dialect();
             description.put("datasourceId", lease.datasourceId());
@@ -154,6 +160,8 @@ public class DatabaseReadService {
         List<String> columnNames = new ArrayList<>();
         boolean truncated = false;
         String datasourceId;
+        // Acquisition defines which database this query uses. Keep the dialect and
+        // result identifier from this lease rather than looking up the current target again.
         try (var lease = manager.acquire(); Connection connection = lease.connection()) {
             DatabaseDialect dialect = lease.dialect();
             datasourceId = lease.datasourceId();

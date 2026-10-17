@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
  * Write tools use the same current global JDBC target as the read tools.
  * DDL can be turned off with
  * {@code dbmcp.write.allow-ddl=false}; DML is always available.
+ * The service acquires the target per invocation; these adapters never cache a pool.
  */
 @Component
 public class DatabaseWriteTools {

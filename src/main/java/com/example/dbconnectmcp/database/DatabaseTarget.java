@@ -8,9 +8,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** One connection pool and its matching execution policy. No credential getters. */
+/**
+ * One pool together with the dialect and metadata schema that must always accompany it.
+ * The manager publishes this unit as a whole so a switch cannot mix old connections
+ * with a new database's policy. Credentials stay inside the pool's data source.
+ */
 final class DatabaseTarget implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(DatabaseTarget.class);
+    // Identifies this pool generation, even when switching to the same JDBC address.
     final String id = "ds-" + UUID.randomUUID();
     final HikariDataSource pool;
     final DatabaseDialect dialect;
@@ -23,6 +28,7 @@ final class DatabaseTarget implements AutoCloseable {
         this.configuredSchema = schema;
     }
 
+    /** Describes the validated target without exposing its connection settings. */
     Map<String, Object> describe(DatabasePoolFactory.Namespace namespace) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("datasourceId", id);
@@ -34,6 +40,7 @@ final class DatabaseTarget implements AutoCloseable {
 
     @Override
     public void close() {
+        // Candidate cleanup and shutdown may race; the underlying pool closes once.
         if (closed.compareAndSet(false, true)) {
             try { pool.close(); }
             catch (RuntimeException error) {

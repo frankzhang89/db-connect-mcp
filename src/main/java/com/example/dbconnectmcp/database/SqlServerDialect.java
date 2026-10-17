@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import org.springframework.stereotype.Component;
 
+/** SQL Server metadata is scoped by both the current catalog and current schema. */
 @Component
 public class SqlServerDialect implements DatabaseDialect {
 

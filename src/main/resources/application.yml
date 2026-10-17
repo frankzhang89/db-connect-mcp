@@ -3,12 +3,12 @@ spring:
     name: db-connect-mcp
   data:
     redis:
-      host: 10.246.183.93
-      port: 11511
-      database: 13
-      # 该实例无鉴权：username/password 必须留空（不要保留占位密码，否则 AUTH 会失败）。
-      username: ""
-      password: ""
+      # Demo Redis instance; use empty credentials if authentication is disabled.
+      host: localhost
+      port: 6379
+      database: 0
+      username: "demo"
+      password: "demo_redis_password"
   ai:
     mcp:
       server:
@@ -16,7 +16,7 @@ spring:
         version: 0.1.0
         protocol: STREAMABLE
         type: SYNC
-        instructions: "Read and write access to the configured MySQL database and Redis instance. DDL requires dbmcp.write.allow-ddl. Credentials are never exposed."
+        instructions: "Read and write access to the current JDBC database and Redis instance. JDBC data source switches apply to all clients and are memory-only. DDL requires dbmcp.write.allow-ddl. Credentials are never exposed in tool results."
         capabilities:
           tool: true
           resource: false
@@ -26,23 +26,42 @@ spring:
           mcp-endpoint: /db-mcp
 
 server:
-  # 默认仅监听本机；部署到远程服务器时设置环境变量 SERVER_ADDRESS=0.0.0.0（或指定内网网卡 IP）。
+  # Listen on all interfaces; set SERVER_ADDRESS=127.0.0.1 for local access only.
   address: 0.0.0.0
   port: ${SERVER_PORT:8283}
 
 dbmcp:
+  auth:
+    enabled: true
+    # Demo token only; use a random secret for deployment and restart after changing it.
+    # Clients send: Authorization: Bearer demo-db-mcp-token-0123456789abcdef
+    token: "demo-db-mcp-token-0123456789abcdef"
   database:
-    url: "jdbc:mysql://10.246.183.132:3306/NEWUSERINFOPHONE?useUnicode=true&characterEncoding=UTF-8&serverTimezone=GMT%2B8"
-    username: "vip"
-    password: "vip"
-    # 连接池（HikariCP）。max-wait 为 Druid 语义，与 connection-timeout 等价，取较小值生效。
+    # Demo startup connection; startup requires a reachable database with valid credentials.
+    url: "jdbc:mysql://localhost:3306/demo_db?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC"
+    username: "demo"
+    password: "demo_db_password"
+    # Optional metadata filter; empty uses the connection default and does not change SQL name resolution.
+    schema: ""
+    # HikariCP pool sizing; connection-timeout is measured in milliseconds.
     max-active: 20
     min-idle: 5
     connection-timeout: 5000
+  switch:
+    # Total deadline includes waiting for concurrent switches; valid range is 1-300 seconds.
+    timeout-seconds: 15
+    # JDBC validation and driver login timeout; must not exceed the total deadline.
+    validation-timeout-seconds: 5
   query:
     max-rows: 100
     timeout-seconds: 10
     max-cell-chars: 4000
   write:
-    # DDL 工具开关；DML 始终允许。读写共用 dbmcp.database 的连接与账号。
+    # Disable to reject DDL; DML remains available. Read and write tools share the current JDBC pool.
     allow-ddl: true
+  redis:
+    # Allowed logical database indexes range from 0 to max-databases minus one.
+    max-databases: 16
+    max-scan-count: 100
+    max-items: 100
+    max-value-chars: 4000

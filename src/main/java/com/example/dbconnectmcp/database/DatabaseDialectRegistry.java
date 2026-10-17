@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 /**
  * Resolves the {@link DatabaseDialect} for a JDBC URL by matching registered
  * URL prefixes. Connection strings are never included in error messages.
+ * Resolution runs for every candidate, allowing switches between database types
+ * without mutating the dialect retained by existing leases.
  */
 @Component
 public class DatabaseDialectRegistry {

@@ -4,6 +4,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import org.springframework.stereotype.Component;
 
+/** PostgreSQL uses the connection's current schema and the default JDBC read policy. */
 @Component
 public class PostgreSqlDialect implements DatabaseDialect {
 

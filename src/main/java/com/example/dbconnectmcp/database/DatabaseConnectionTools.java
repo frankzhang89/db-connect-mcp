@@ -5,6 +5,10 @@ import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
 
+/**
+ * MCP entry point for replacing the JDBC target shared by every client of this server.
+ * Switches are memory-only; Redis maintains its own independent database selection.
+ */
 @Component
 public class DatabaseConnectionTools {
     private final DatabaseRuntimeManager manager;
@@ -18,6 +22,8 @@ public class DatabaseConnectionTools {
             @McpToolParam(description = "Database account", required = true) String username,
             @McpToolParam(description = "Database password; an empty string is allowed", required = true) String password,
             @McpToolParam(description = "Optional metadata schema; omission uses the new connection default", required = false) String schema) {
+        // Capture a complete new configuration; do not inherit the old target's schema
+        // or credentials when optional parameters are omitted.
         return manager.switchTo(new DatabaseConnectionSettings(jdbcUrl, username, password, schema));
     }
 }
