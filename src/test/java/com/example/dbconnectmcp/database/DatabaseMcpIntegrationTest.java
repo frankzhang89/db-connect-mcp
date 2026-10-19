@@ -42,6 +42,10 @@ class DatabaseMcpIntegrationTest {
     void createTestDirectory() throws Exception {
         // Keep synthetic configurations as build artifacts; do not load the user's YAML.
         directory = Files.createTempDirectory(Path.of("target"), "mcp-integration-");
+        // Warm Mockito before the probe driver's deliberately short connection deadline.
+        // Filter registration can now initialize the runtime earlier during Tomcat startup.
+        mock(Connection.class);
+        mock(DatabaseMetaData.class);
     }
 
     @Test
@@ -62,7 +66,7 @@ class DatabaseMcpIntegrationTest {
 
             String session = initialize(endpoint);
             var tools = rpc(endpoint, session, "tools/list", Map.of()).body().path("result").path("tools");
-            assertEquals(13, tools.size());
+            assertEquals(14, tools.size());
             JsonNode switchTool = null;
             for (JsonNode tool : tools) {
                 assertFalse(tool.path("inputSchema").path("properties").has("expectedDatasourceId"));
@@ -119,6 +123,69 @@ class DatabaseMcpIntegrationTest {
         assertFalse(output.getAll().contains(TOKEN));
         assertFalse(output.getAll().contains(PASSWORD));
         assertFalse(output.getAll().contains("raw-driver-private-host"));
+    }
+
+    @Test
+    void transactionToolUsesRealConnectionsAndHiddenSessionContext() throws Exception {
+        String address = "jdbc:h2:mem:mcp_transactions_" + System.nanoTime() + ";DB_CLOSE_DELAY=-1";
+        Path config = configuration("transaction-test", TOKEN);
+        Files.writeString(config, Files.readString(config).replace("jdbc:probe:transaction-test", address)
+                .replace("max-active: 1", "max-active: 6"));
+        try (Connection observer = java.sql.DriverManager.getConnection(address, "user", PASSWORD);
+                var statement = observer.createStatement()) {
+            statement.execute("CREATE TABLE account(id INT PRIMARY KEY, balance INT)");
+            statement.execute("INSERT INTO account VALUES(1,1000)");
+            try (var context = start(config)) {
+                String endpoint = endpoint(context);
+                String session = initialize(endpoint);
+                String otherSession = initialize(endpoint);
+                var tools = rpc(endpoint, session, "tools/list", Map.of()).body().path("result").path("tools");
+                JsonNode transactionTool = null;
+                for (JsonNode tool : tools) {
+                    if (tool.path("name").asString().equals("db_execute")) { transactionTool = tool; }
+                }
+                assertNotNull(transactionTool);
+                var properties = transactionTool.path("inputSchema").path("properties");
+                assertEquals(2, properties.size());
+                assertTrue(properties.has("sql"));
+                assertTrue(properties.has("transactionId"));
+                assertFalse(properties.has("context"));
+
+                var begun = call(endpoint, session, "db_execute", Map.of("sql", "BEGIN"));
+                String id = begun.path("transactionId").asString();
+                var own = call(endpoint, session, "db_execute", Map.of("transactionId", id,
+                        "sql", "UPDATE account SET balance=900 WHERE id=1; SELECT balance FROM account WHERE id=1"));
+                assertEquals(900, own.path("results").get(1).path("rows").get(0).path("BALANCE").asInt());
+                try (var result = statement.executeQuery("SELECT balance FROM account WHERE id=1")) {
+                    result.next(); assertEquals(1000, result.getInt(1));
+                }
+                var denied = rpc(endpoint, otherSession, "tools/call", Map.of("name", "db_execute",
+                        "arguments", Map.of("sql", "COMMIT", "transactionId", id))).body();
+                assertTrue(denied.path("result").path("isError").asBoolean());
+                assertTrue(denied.toString().contains("TRANSACTION_NOT_FOUND"));
+                call(endpoint, session, "db_execute", Map.of("sql", "ROLLBACK", "transactionId", id));
+
+                id = call(endpoint, session, "db_execute", Map.of("sql", "BEGIN")).path("transactionId").asString();
+                call(endpoint, session, "db_execute", Map.of("sql", "UPDATE account SET balance=800 WHERE id=1", "transactionId", id));
+                call(endpoint, session, "db_execute", Map.of("sql", "COMMIT", "transactionId", id));
+                try (var result = statement.executeQuery("SELECT balance FROM account WHERE id=1")) {
+                    result.next(); assertEquals(800, result.getInt(1));
+                }
+
+                id = call(endpoint, session, "db_execute", Map.of("sql", "BEGIN")).path("transactionId").asString();
+                call(endpoint, session, "db_execute", Map.of("sql", "UPDATE account SET balance=700 WHERE id=1", "transactionId", id));
+                var delete = HttpRequest.newBuilder(URI.create(endpoint)).header("Authorization", "Bearer " + TOKEN)
+                        .header("Mcp-Session-Id", session).DELETE().build();
+                assertTrue(client.send(delete, HttpResponse.BodyHandlers.ofString()).statusCode() < 300);
+                // DELETE cleanup occurs after transport handling; await resource release.
+                org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3)).untilAsserted(() -> {
+                    try (var result = statement.executeQuery("SELECT balance FROM account WHERE id=1")) {
+                        result.next(); assertEquals(800, result.getInt(1));
+                    }
+                    assertEquals(0, context.getBean(DatabaseTransactionManager.class).activeCount());
+                });
+            }
+        }
     }
 
     private Path configuration(String database, String token) throws Exception {
@@ -196,6 +263,15 @@ class DatabaseMcpIntegrationTest {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class ProbeConfiguration {
+        @Bean DatabaseDialect transactionTestDialect() {
+            return new PostgreSqlDialect() {
+                @Override public String name() { return "H2 test database"; }
+                @Override public String urlPrefix() { return "jdbc:h2:"; }
+                @Override public String driverClassName() { return "org.h2.Driver"; }
+                // H2 TRUNCATE commits implicitly; do not borrow PostgreSQL's guarantee.
+                @Override public boolean transactionalTruncate() { return false; }
+            };
+        }
         @Bean DatabaseDialect probeDialect() {
             return new PostgreSqlDialect() {
                 @Override public String name() { return "Probe"; }

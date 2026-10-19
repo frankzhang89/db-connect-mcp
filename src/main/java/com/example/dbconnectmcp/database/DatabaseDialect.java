@@ -53,6 +53,22 @@ public interface DatabaseDialect {
         connection.setAutoCommit(true);
     }
 
+    /** Explicit transactions require stronger guarantees than independent auto-commit writes. */
+    default boolean supportsExplicitTransactions() { return true; }
+
+    /** Whether TRUNCATE preserves the surrounding transaction and can be rolled back. */
+    default boolean transactionalTruncate() { return false; }
+
+    /** Prepare once at BEGIN; subsequent statements must never enable auto-commit. */
+    default void beginTransaction(Connection connection) throws SQLException {
+        if (!supportsExplicitTransactions() || !connection.getMetaData().supportsTransactions()) {
+            throw new SQLException("Explicit transactions are not supported.", "0A000");
+        }
+        connection.setReadOnly(false);
+        connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+        connection.setAutoCommit(false);
+    }
+
     /** Only request generated keys for plain INSERTs on supported drivers. */
     default boolean supportsGeneratedKeys() {
         return true;

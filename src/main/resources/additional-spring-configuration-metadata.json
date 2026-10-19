@@ -62,7 +62,7 @@
     {
       "name": "dbmcp.query.max-rows",
       "type": "java.lang.Integer",
-      "description": "Maximum number of rows db_query returns per call.",
+      "description": "Maximum number of rows db_query returns per call and db_execute returns per result set; does not limit rows modified by DML.",
       "defaultValue": 100
     },
     {
@@ -76,6 +76,42 @@
       "type": "java.lang.Integer",
       "description": "Maximum characters per returned cell; longer values are truncated.",
       "defaultValue": 4000
+    },
+    {
+      "name": "dbmcp.transaction.idle-timeout-seconds",
+      "type": "java.lang.Integer",
+      "description": "Idle time before an explicit transaction is rolled back and released. Cleanup waits until in-flight execution finishes.",
+      "defaultValue": 120
+    },
+    {
+      "name": "dbmcp.transaction.max-lifetime-seconds",
+      "type": "java.lang.Integer",
+      "description": "Maximum explicit transaction lifetime; must be at least the idle timeout. Statements are also constrained by this remaining budget.",
+      "defaultValue": 600
+    },
+    {
+      "name": "dbmcp.transaction.max-active",
+      "type": "java.lang.Integer",
+      "description": "Global retained transaction/opening limit. Each pool also reserves one connection for independent tools when possible.",
+      "defaultValue": 5
+    },
+    {
+      "name": "dbmcp.transaction.max-statements",
+      "type": "java.lang.Integer",
+      "description": "Maximum statements per db_execute script (1-100). Each statement's result sequence is also bounded by this limit.",
+      "defaultValue": 20
+    },
+    {
+      "name": "dbmcp.transaction.max-sql-chars",
+      "type": "java.lang.Integer",
+      "description": "Maximum SQL characters per db_execute call (1-1000000).",
+      "defaultValue": 20000
+    },
+    {
+      "name": "dbmcp.transaction.script-timeout-seconds",
+      "type": "java.lang.Integer",
+      "description": "Execution budget across a db_execute script; each statement also uses the query timeout and remaining transaction lifetime. Driver cancellation is best effort.",
+      "defaultValue": 30
     },
     {
       "name": "dbmcp.write.allow-ddl",

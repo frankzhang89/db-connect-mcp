@@ -197,6 +197,7 @@ public class DatabaseRuntimeManager implements AutoCloseable {
     private static final class PoolState {
         final DatabaseTarget target;
         int users;
+        int transactions;
         boolean retired;
         PoolState(DatabaseTarget target) { this.target = target; }
     }
@@ -206,6 +207,7 @@ public class DatabaseRuntimeManager implements AutoCloseable {
         private final PoolState state;
         // Makes repeated close() calls harmless and prevents double decrements.
         private final AtomicBoolean released = new AtomicBoolean();
+        private boolean transactionReserved;
         private Lease(PoolState state) { this.state = state; }
         public String datasourceId() { return state.target.id; }
         public DatabaseDialect dialect() { return state.target.dialect; }
@@ -217,10 +219,31 @@ public class DatabaseRuntimeManager implements AutoCloseable {
             return state.target.pool.getConnection();
         }
 
+        /** Discards a connection with an uncertain transaction outcome instead of reusing it. */
+        void evict(Connection connection) {
+            state.target.pool.evictConnection(connection);
+        }
+
+        /** Retained transactions leave one pool slot for independent tools when possible. */
+        boolean reserveTransaction() {
+            synchronized (stateLock) {
+                if (released.get()) { return false; }
+                if (transactionReserved) { return true; }
+                int limit = Math.max(1, state.target.pool.getMaximumPoolSize() - 1);
+                if (state.transactions >= limit) { return false; }
+                state.transactions++;
+                transactionReserved = true;
+                return true;
+            }
+        }
+
         @Override
         public void close() {
             if (released.compareAndSet(false, true)) {
-                synchronized (stateLock) { state.users--; }
+                synchronized (stateLock) {
+                    state.users--;
+                    if (transactionReserved) { state.transactions--; }
+                }
                 // The final operation on a retired target performs deferred cleanup.
                 closeIfUnused(state);
             }

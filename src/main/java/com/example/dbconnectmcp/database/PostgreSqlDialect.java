@@ -9,6 +9,9 @@ import org.springframework.stereotype.Component;
 public class PostgreSqlDialect implements DatabaseDialect {
 
     @Override
+    public boolean transactionalTruncate() { return true; }
+
+    @Override
     public String name() { return "PostgreSQL"; }
 
     @Override

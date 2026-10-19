@@ -46,7 +46,7 @@ Unquoted table/schema names follow the driver's identifier case rules (uppercase
 
 StarRocks uses its own `com.starrocks:starrocks-connector-j` driver and `jdbc:starrocks:` URL; it does not route through the MySQL adapter. The URL path contains **catalog.database**, and the FE query port defaults to `9030`. The driver's catalog and schema APIs represent these two levels separately. See the [official StarRocks driver documentation](https://docs.starrocks.io/docs/integrations/JDBC_driver/).
 
-One server process has **one current global JDBC data source**, shared by every MCP client. Old pools exist temporarily while operations acquired before a switch finish. There is no session isolation or `expectedDatasourceId` parameter. Use separate server processes if clients need independent database targets.
+One server process has **one current global JDBC data source**, shared by every MCP client. Old pools exist temporarily while operations or explicit transactions acquired before a switch finish. Database selection is global; `db_execute` separately isolates transaction handles within their owning MCP sessions and pins each transaction to its original target. There is no `expectedDatasourceId` parameter. Use separate server processes if clients need independent default database targets.
 
 `application.yml` is packaged inside the JAR. Editing this packaged configuration requires rebuilding and restarting. Use `db_switch_datasource` for a runtime database change. Runtime switches never modify YAML or other configuration files, and restart restores the YAML connection.
 
@@ -143,6 +143,7 @@ The listening interface comes from `server.address`; see [Remote deployment](#re
 | `db_list_tables` | List tables and views in the configured database (at most 500) |
 | `db_describe_table` | Inspect a table's columns and primary key, optionally selecting a schema |
 | `db_query` | Run one parameterized, read-only `SELECT` query |
+| `db_execute` | Agent-controlled transaction: `BEGIN`, query/DML/TRUNCATE scripts, then explicit `COMMIT` or `ROLLBACK`; arguments are `sql` and `transactionId?` |
 | `db_switch_datasource` | Validate and switch the global JDBC target without restarting; memory-only |
 | `redis_scan_keys` | Scan keys with cursor-based pagination |
 | `redis_inspect_key` | Inspect a key's type, TTL, and size |
@@ -163,6 +164,55 @@ Set `server.address` to `127.0.0.1` for local-only access. To run it on a remote
 1. Bind a reachable interface: set the environment variable `SERVER_ADDRESS=0.0.0.0` (all interfaces) or the server's private IP, and optionally `SERVER_PORT`. These override `server.address` and `server.port` in `application.yml`. Open the port in the firewall; the MCP endpoint is then `http://<server-host>:8283/db-mcp`.
 2. Configure `dbmcp.database` and `spring.data.redis` with addresses reachable from the server, rebuild, and restart.
 3. Keep Bearer authentication enabled and use HTTPS through a TLS reverse proxy for remote access. The token grants access to all write and data-source-switch tools, so restrict network access as appropriate. Startup credentials stay on the server; clients supply new JDBC credentials only when using the switch tool.
+
+## Agent-controlled transactions: `db_execute`
+
+Use this tool when an agent must change data, query its uncommitted changes, and decide whether to keep or undo them. It has only two input fields: required `sql` and optional `transactionId`. The server obtains session ownership from the MCP exchange; callers do not provide a session field. Existing `db_query`, `db_execute_dml`, and `db_execute_ddl` remain independent and never join these transactions.
+
+1. Call `{"sql":"BEGIN"}` without an ID. `START TRANSACTION` and `BEGIN TRANSACTION` are also accepted. The server returns a generated `transactionId`, `datasourceId`, database type, `state: "ACTIVE"`, `isolation: "READ_COMMITTED"`, timeout limits, and `truncateRollbackSupported`.
+2. Include that ID on every subsequent call. Queries, DML, and mixed semicolon-separated scripts run on the same retained JDBC connection with auto-commit disabled. Queries see that transaction's own writes.
+3. Inspect results and send more SQL as needed. Call `{"sql":"COMMIT","transactionId":"tx-..."}` only after verification, or `{"sql":"ROLLBACK","transactionId":"tx-..."}` to discard the remaining uncommitted work. Control commands must be standalone calls.
+
+For example, on a schema containing `account(id, balance)`:
+
+```json
+{"sql":"BEGIN"}
+```
+
+Save the returned ID, then use it in place of `tx-...`:
+
+```json
+{"transactionId":"tx-...","sql":"SELECT id, balance FROM account WHERE id IN (1,2) FOR UPDATE"}
+{"transactionId":"tx-...","sql":"UPDATE account SET balance=balance-100 WHERE id=1; UPDATE account SET balance=balance+100 WHERE id=2; SELECT id,balance FROM account WHERE id IN (1,2)"}
+{"transactionId":"tx-...","sql":"ROLLBACK"}
+```
+
+Use the target engine's locking syntax; `FOR UPDATE` is not SQL Server syntax. Choose `COMMIT` instead of `ROLLBACK` when the checks pass. Ordinary SQL without an ID is rejected rather than silently auto-committed. Ended, unknown, or expired IDs never create replacement transactions. No parameter array is exposed: write trusted SQL literals with correct escaping, and never concatenate untrusted user text. The server preserves statement text, removing outer separators; it adds the terminator required by SQL Server MERGE.
+
+**SQL scope.** The server validates the complete script before executing its first statement. It accepts parser-supported queries/CTEs, INSERT/UPDATE/DELETE/MERGE/UPSERT, locking reads, supported RETURNING/OUTPUT row sets, and **TRUNCATE**. Other DDL, SELECT INTO, CALL/EXEC, anonymous procedure blocks, dynamic SQL, session configuration, and embedded transaction controls are rejected. Savepoints and nested transactions are not implemented. Comments outside quoted literals are rejected, including executable MySQL comments. Semicolons inside supported quoted literals/identifiers do not split statements. Parser acceptance does not imply that the target engine accepts the syntax; vendor constructs outside the parser's supported grammar are rejected. Triggers, existing functions, external effects, sequence changes, and nontransactional storage are governed by database permissions and engine semantics, not made reversible by this tool.
+
+**TRUNCATE is an explicit exception to the DDL ban.** On [MySQL](https://dev.mysql.com/doc/refman/8.4/en/truncate-table.html) and [Oracle](https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/TRUNCATE-TABLE.html), it cannot be rolled back and may implicitly commit earlier work, including before a failing TRUNCATE attempt. After an attempt on these engines, responses retain `implicitCommitPossible: true`, `rollbackScope: "SINCE_LAST_IMPLICIT_COMMIT"`, and a warning through transaction completion. The handle stays usable for later statements, but no longer represents one atomic unit from BEGIN. `ROLLBACK` cannot undo work already committed. Use DELETE instead when full data rollback is required. [PostgreSQL](https://www.postgresql.org/docs/current/sql-truncate.html) and [SQL Server](https://learn.microsoft.com/en-us/sql/t-sql/statements/truncate-table-transact-sql?view=sql-server-ver17) support transactional TRUNCATE subject to engine restrictions. This exception is independent of `dbmcp.write.allow-ddl`, which controls only the old DDL tool.
+
+**Results and failures.** Each success returns transaction identity/state and an ordered `results` array. Entries identify their zero-based `statementIndex` and `resultIndex`, then contain either query columns/rows/truncation or an affected-row count. Row sets from RETURNING/OUTPUT use the query format. Counts are driver-reported; TRUNCATE does not promise a deleted-row count, and generated keys are not requested automatically. Query results use `dbmcp.query.max-rows` and `max-cell-chars`. The row limit does not limit how many rows DML modifies. A script timeout supplements the per-statement query timeout; drivers can exceed cancellation deadlines.
+
+Failures set MCP `isError: true` and return a JSON body with `success: false`, a safe `code` and message, and transaction state when available. SQL execution failures also return the zero-based failing statement index, completed results, and a sanitized SQLState when available. A validation failure runs no SQL and leaves the transaction usable. An execution failure stops the script and sets `ROLLBACK_ONLY`; only explicit ROLLBACK is accepted afterward. No automatic retry or commit occurs. Failed commit/rollback acknowledgement returns `state: "UNKNOWN"` with `COMMIT_OUTCOME_UNKNOWN` or `ROLLBACK_OUTCOME_UNKNOWN`, invalidates the handle, and discards its connection. Verify database state independently; retrying writes could duplicate a committed change. Lost tool responses, including a lost BEGIN response, must not be blindly retried.
+
+**Isolation and lifetime.** Different transaction IDs retain different connections even within one MCP session. The same ID is serialized, belongs to its creating session, and remains pinned across global data source switches. Agents sharing both an ID and session share the transaction; an ID is not a separate authenticated agent identity. READ COMMITTED does not make a multi-query snapshot stable. Other sessions must avoid dirty reads to exclude uncommitted data; writes and locking queries can block other sessions before commit. Explicit MCP session DELETE, idle/lifetime expiry, and service shutdown attempt rollback and release resources. Ending a POST or disconnecting an SSE stream does not end a transaction. Process crashes cannot provide a cleanup acknowledgement. Handles are memory-only and do not survive restart. StarRocks is rejected at BEGIN rather than silently using auto-commit; other targets must report JDBC transaction support. Use transactional tables (for example InnoDB on MySQL) and avoid indirect nontransactional effects.
+
+Optional limits, with defaults:
+
+```yaml
+dbmcp:
+  transaction:
+    idle-timeout-seconds: 120
+    max-lifetime-seconds: 600
+    max-active: 5
+    max-statements: 20
+    max-sql-chars: 20000
+    script-timeout-seconds: 30
+```
+
+The active limit is global, including retired data sources and transactions being opened. Each target also caps retained transactions at `max(1, maximumPoolSize - 1)` to leave one connection for independent tools when possible. A one-connection pool can hold one transaction, which occupies its entire capacity. Calls sharing a busy transaction wait at most the query timeout before `TRANSACTION_BUSY`; lock waiting counts toward idle/lifetime checks after acquisition. The cleanup task skips executing transactions and checks them again afterward; query timeouts are driver-enforced rather than a hard kill guarantee. Keep transactions short while an agent examines results. See [skill.md](skill.md#agent-controlled-transactions-db_execute) for the detailed agent workflow and recovery table.
 
 ## Write tools
 
@@ -188,6 +238,6 @@ mvn test
 mvn package
 ```
 
-Tests load all five real JDBC drivers and check URL acceptance, schema/name handling, read/write behavior, row limits, and SQL guards. Additional tests cover switch publication, concurrent leases, retirement, timeout/late completion, shutdown, authentication defaults, HTTP methods, and redaction. HTTP integration tests start the actual application against an in-process JDBC test double, perform MCP initialization and tool calls, check failed-switch rollback and restart-to-YAML behavior, and assert that configuration files remain unchanged. They do not establish compatibility with live database servers.
+Tests load all five real JDBC drivers and check URL acceptance, schema/name handling, read/write behavior, row limits, and SQL guards. Additional tests cover switch publication, concurrent leases, retirement, timeout/late completion, shutdown, authentication defaults, HTTP methods, and redaction. HTTP integration tests use both an in-process JDBC test double and a test-only H2 database. Transaction tests verify own-write visibility, isolation between connections, commit/rollback, script rejection and failure, original-target retention, expiry, session ownership/deletion, capacity recovery, result limits, implicit-commit warnings, and unknown commit outcomes. H2 is test-scoped and is not a supported production target. These tests do not establish compatibility with live MySQL, Oracle, SQL Server, PostgreSQL, or StarRocks servers.
 
 After starting the server, use Codex's `/mcp` command to inspect the tool list, then try `db_list_tables`, `db_describe_table`, `db_query`, and the Redis tools with a least-privilege account. For each target database, verify a parameterized SELECT, metadata in the expected schema, and permitted DML/DDL in a disposable test schema. Use `SELECT 1 FROM dual` for Oracle and `SELECT 1` for the other engines. Real data access requires reachable services and credentials.

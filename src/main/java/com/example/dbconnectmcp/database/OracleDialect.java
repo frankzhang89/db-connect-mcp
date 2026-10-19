@@ -10,6 +10,16 @@ import org.springframework.stereotype.Component;
 public class OracleDialect implements DatabaseDialect {
 
     @Override
+    public void beginTransaction(Connection connection) throws SQLException {
+        // Oracle does not use JDBC's read-only hint; auto-commit controls the transaction.
+        if (!connection.getMetaData().supportsTransactions()) {
+            throw new SQLException("Explicit transactions are not supported.", "0A000");
+        }
+        connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+        connection.setAutoCommit(false);
+    }
+
+    @Override
     public String name() { return "Oracle"; }
 
     @Override

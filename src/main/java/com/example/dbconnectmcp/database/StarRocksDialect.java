@@ -11,6 +11,10 @@ import org.springframework.stereotype.Component;
 @Component
 public class StarRocksDialect implements DatabaseDialect {
 
+    // Do not silently turn the transactional tool into version-dependent auto-commit writes.
+    @Override
+    public boolean supportsExplicitTransactions() { return false; }
+
     @Override
     public String name() { return "StarRocks"; }
 
