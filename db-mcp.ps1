@@ -1,5 +1,5 @@
 param(
-    [Parameter(Position = 0, Mandatory = $true)]
+    [Parameter(Position = 0)]
     [ValidateSet('start', 'stop', 'restart')]
     [string]$Action,
 
@@ -19,6 +19,76 @@ $jarPathFile = Join-Path $runDir 'db-mcp.jar-path'
 $outLog = Join-Path $runDir 'db-mcp.out.log'
 $errLog = Join-Path $runDir 'db-mcp.err.log'
 $jarName = if ($env:DB_MCP_JAR_NAME) { $env:DB_MCP_JAR_NAME } else { 'db-mcp.jar' }
+
+function Select-McpAction {
+    if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return 'restart' }
+
+    $actions = @('stop', 'restart', 'start')
+    $selected = 1
+    $foreground = [Console]::ForegroundColor
+    $background = [Console]::BackgroundColor
+    $cursorVisible = [Console]::CursorVisible
+    Write-Host 'Use Up/Down to select an action, then press Enter.'
+    # Reserve the rows first so scrolling at the bottom does not move the menu.
+    1..4 | ForEach-Object { Write-Host '' }
+    $menuTop = [Console]::CursorTop - 4
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        [Console]::CursorVisible = $false
+        $redraw = $true
+        $lastSeconds = -1
+        while ($timer.Elapsed.TotalSeconds -lt 5) {
+            $seconds = [int][Math]::Ceiling(5 - $timer.Elapsed.TotalSeconds)
+            if ($redraw -or $seconds -ne $lastSeconds) {
+                $width = [Math]::Max(1, [Math]::Min(79, [Console]::BufferWidth - 1))
+                for ($index = 0; $index -lt $actions.Count; $index++) {
+                    [Console]::SetCursorPosition(0, $menuTop + $index)
+                    [Console]::ForegroundColor = $foreground
+                    [Console]::BackgroundColor = $background
+                    $marker = '  '
+                    if ($index -eq $selected) {
+                        $marker = '> '
+                        [Console]::ForegroundColor = [ConsoleColor]::Black
+                        [Console]::BackgroundColor = [ConsoleColor]::Cyan
+                    }
+                    $line = ($marker + $actions[$index]).PadRight($width).Substring(0, $width)
+                    [Console]::Write($line)
+                }
+                [Console]::ForegroundColor = $foreground
+                [Console]::BackgroundColor = $background
+                [Console]::SetCursorPosition(0, $menuTop + 3)
+                $line = "Default: restart in $seconds seconds unless confirmed with Enter."
+                [Console]::Write($line.PadRight($width).Substring(0, $width))
+                $lastSeconds = $seconds
+                $redraw = $false
+            }
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true).Key
+                if ($timer.Elapsed.TotalSeconds -ge 5) { break }
+                switch ($key) {
+                    'UpArrow' {
+                        $selected = ($selected + $actions.Count - 1) % $actions.Count
+                        $redraw = $true
+                    }
+                    'DownArrow' {
+                        $selected = ($selected + 1) % $actions.Count
+                        $redraw = $true
+                    }
+                    'Enter' { return $actions[$selected] }
+                }
+            }
+            else { Start-Sleep -Milliseconds 50 }
+        }
+        return 'restart'
+    }
+    finally {
+        $timer.Stop()
+        [Console]::ForegroundColor = $foreground
+        [Console]::BackgroundColor = $background
+        [Console]::CursorVisible = $cursorVisible
+        [Console]::SetCursorPosition(0, $menuTop + 4)
+    }
+}
 
 function Resolve-Java {
     $jdkHome = $null
@@ -198,6 +268,8 @@ function Stop-Mcp {
 
 $exitCode = 0
 try {
+    if (-not $Action) { $Action = Select-McpAction }
+    Write-Host "Action: $Action"
     switch ($Action) {
         'start' { Start-Mcp $JarOrDirectory }
         'stop' { Stop-Mcp }

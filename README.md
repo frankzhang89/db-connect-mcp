@@ -118,7 +118,9 @@ mvn clean package '-Dbase.export.path=D:/opt/packaging/'
 
 On Windows, `db-mcp.cmd` invokes `db-mcp.ps1`. On Linux or macOS, use `sh ./db-mcp start /opt/packaging/`, `sh ./db-mcp stop`, or `sh ./db-mcp restart`.
 
-Double-clicking `db-mcp.cmd`, or running it without arguments, defaults to `restart`. Both launchers wait for Spring Boot startup to complete and report the service's actual listening port. On an interactive terminal, they keep the result visible for five seconds, or until any key is pressed; redirected/non-interactive runs skip this pause. Closing this prompt leaves the background service running.
+Double-clicking `db-mcp.cmd`, or running it without arguments in an interactive terminal, opens a menu with `stop`, `restart`, and `start`. Use the Up/Down arrow keys to cycle through the actions and Enter to execute; `restart` is initially highlighted. The menu counts down for five seconds. Moving the highlight does not reset the countdown: without Enter, the launcher executes `restart`, even if another action is highlighted. Explicit action arguments bypass the menu. Redirected/non-interactive Windows runs without an action immediately default to `restart`. The launcher prints the final action before executing it.
+
+Both launchers wait for Spring Boot startup to complete and report the service's actual listening port. On an interactive terminal, they keep the result visible for five seconds, or until any key is pressed; redirected/non-interactive runs skip this pause. Closing this prompt leaves the background service running.
 
 Startup waits up to 60 seconds; override this with `DB_MCP_STARTUP_TIMEOUT_SEC` (a positive integer). A timeout leaves the recorded process available for `stop` or `restart`.
 
