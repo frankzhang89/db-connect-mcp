@@ -62,8 +62,11 @@ public class DatabaseReadService {
             dialect.prepareRead(connection);
             // JDBC metadata lists tables and views without touching user data.
             DatabaseMetaData metadata = connection.getMetaData();
+            String selectedSchema = schema(connection, dialect, lease.schema(), null);
+            TableDetails details = new TableDetails(connection, dialect, timeoutSeconds);
+            Map<String, String> comments = details.tableComments(dialect.catalog(connection), selectedSchema);
             try (ResultSet result = metadata.getTables(dialect.catalog(connection),
-                    escapePattern(schema(connection, dialect, lease.schema(), null), metadata), "%", new String[] {"TABLE", "VIEW"})) {
+                    escapePattern(selectedSchema, metadata), "%", new String[] {"TABLE", "VIEW"})) {
                 while (result.next()) {
                     if (tables.size() >= MAX_TABLES) {
                         truncated = true;
@@ -72,6 +75,8 @@ public class DatabaseReadService {
                     Map<String, String> table = new LinkedHashMap<>();
                     table.put("name", result.getString("TABLE_NAME"));
                     table.put("type", result.getString("TABLE_TYPE"));
+                    String name = result.getString("TABLE_NAME");
+                    table.put("comment", comments.containsKey(name) ? comments.get(name) : result.getString("REMARKS"));
                     if (result.getString("TABLE_CAT") != null) {
                         table.put("catalog", result.getString("TABLE_CAT"));
                     }
@@ -123,6 +128,10 @@ public class DatabaseReadService {
                     column.put("type", result.getString("TYPE_NAME"));
                     column.put("size", result.getInt("COLUMN_SIZE"));
                     column.put("nullable", result.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls);
+                    column.put("comment", result.getString("REMARKS"));
+                    column.put("defaultValue", result.getString("COLUMN_DEF"));
+                    column.put("autoIncrement", TableDetails.autoIncrement(result));
+                    column.put("identity", dialect instanceof MySqlDialect ? false : null);
                     columns.add(column);
                 }
             }
@@ -130,11 +139,33 @@ public class DatabaseReadService {
                 throw new IllegalArgumentException("The table was not found or its structure cannot be read.");
             }
             try (ResultSet result = metadata.getPrimaryKeys(catalog, schema, actualTable)) {
+                Map<Integer, String> orderedKeys = new java.util.TreeMap<>();
                 while (result.next()) {
-                    primaryKeys.add(result.getString("COLUMN_NAME"));
+                    orderedKeys.put(result.getInt("KEY_SEQ"), result.getString("COLUMN_NAME"));
                 }
+                primaryKeys.addAll(orderedKeys.values());
             }
             description.put("table", actualTable);
+            TableDetails details = new TableDetails(connection, dialect, timeoutSeconds);
+            Map<String, String> comments = details.tableComments(catalog, schema);
+            String comment = comments.get(actualTable);
+            if (!comments.containsKey(actualTable)) {
+                try (ResultSet tables = metadata.getTables(catalog, escapePattern(schema, metadata),
+                        escapePattern(actualTable, metadata), new String[] {"TABLE", "VIEW"})) {
+                    while (tables.next()) {
+                        String found = tables.getString("TABLE_NAME");
+                        if (actualTable.equals(found) || (caseInsensitive && actualTable.equalsIgnoreCase(found))) {
+                            comment = tables.getString("REMARKS");
+                            break;
+                        }
+                    }
+                }
+            }
+            description.put("comment", comment);
+            details.enrichColumns(schema, actualTable, columns);
+            description.put("indexes", details.indexes(catalog, schema, actualTable));
+            description.put("foreignKeys", details.foreignKeys(catalog, schema, actualTable));
+            description.put("uniqueConstraints", details.uniqueConstraints(catalog, schema, actualTable));
             if (catalog != null) {
                 description.put("catalog", catalog);
             }

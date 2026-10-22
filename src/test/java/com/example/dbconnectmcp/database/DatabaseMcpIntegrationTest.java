@@ -134,11 +134,23 @@ class DatabaseMcpIntegrationTest {
         try (Connection observer = java.sql.DriverManager.getConnection(address, "user", PASSWORD);
                 var statement = observer.createStatement()) {
             statement.execute("CREATE TABLE account(id INT PRIMARY KEY, balance INT)");
+            statement.execute("COMMENT ON TABLE account IS 'Account balances'");
+            statement.execute("COMMENT ON COLUMN account.balance IS 'Current balance'");
             statement.execute("INSERT INTO account VALUES(1,1000)");
             try (var context = start(config)) {
                 String endpoint = endpoint(context);
                 String session = initialize(endpoint);
                 String otherSession = initialize(endpoint);
+                var description = call(endpoint, session, "db_describe_table", Map.of("tableName", "ACCOUNT"));
+                assertEquals("Account balances", description.path("comment").asString());
+                assertEquals("Current balance", description.path("columns").get(1).path("comment").asString());
+                assertTrue(description.has("indexes"));
+                assertTrue(description.path("foreignKeys").isArray());
+                assertTrue(description.path("uniqueConstraints").isArray());
+                assertTrue(description.path("columns").get(1).has("defaultValue"));
+                assertTrue(description.path("columns").get(1).path("defaultValue").isNull());
+                var listed = call(endpoint, session, "db_list_tables", Map.of());
+                assertEquals("Account balances", listed.path("tables").get(0).path("comment").asString());
                 var tools = rpc(endpoint, session, "tools/list", Map.of()).body().path("result").path("tools");
                 JsonNode transactionTool = null;
                 for (JsonNode tool : tools) {
@@ -264,10 +276,12 @@ class DatabaseMcpIntegrationTest {
     @TestConfiguration(proxyBeanMethods = false)
     static class ProbeConfiguration {
         @Bean DatabaseDialect transactionTestDialect() {
-            return new PostgreSqlDialect() {
+            return new DatabaseDialect() {
                 @Override public String name() { return "H2 test database"; }
                 @Override public String urlPrefix() { return "jdbc:h2:"; }
                 @Override public String driverClassName() { return "org.h2.Driver"; }
+                @Override public String schemaPattern(Connection connection) throws SQLException { return connection.getSchema(); }
+                @Override public boolean supportsGeneratedKeys() { return false; }
                 // H2 TRUNCATE commits implicitly; do not borrow PostgreSQL's guarantee.
                 @Override public boolean transactionalTruncate() { return false; }
             };

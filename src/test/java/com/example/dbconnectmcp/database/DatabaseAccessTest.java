@@ -32,6 +32,13 @@ class DatabaseAccessTest {
         when(connection.getCatalog()).thenReturn("demo");
         when(connection.getSchema()).thenReturn("app");
         when(metadata.getSearchStringEscape()).thenReturn("\\");
+        ResultSet empty = mock(ResultSet.class);
+        PreparedStatement catalogQuery = mock(PreparedStatement.class);
+        when(connection.prepareStatement(anyString())).thenReturn(catalogQuery);
+        when(catalogQuery.executeQuery()).thenReturn(empty);
+        when(metadata.getTables(nullable(String.class), nullable(String.class), anyString(), any(String[].class))).thenReturn(empty);
+        when(metadata.getIndexInfo(nullable(String.class), nullable(String.class), anyString(), anyBoolean(), anyBoolean())).thenReturn(empty);
+        when(metadata.getImportedKeys(nullable(String.class), nullable(String.class), anyString())).thenReturn(empty);
     }
 
     private DatabaseReadService reads(String url, String schema) {
@@ -146,11 +153,46 @@ class DatabaseAccessTest {
         when(tables.getString("TABLE_TYPE")).thenReturn("TABLE");
         when(tables.getString("TABLE_CAT")).thenReturn("demo");
         when(tables.getString("TABLE_SCHEM")).thenReturn("app_data");
+        when(tables.getString("REMARKS")).thenReturn("Event history");
 
         Map<String, Object> result = reads("jdbc:postgresql://localhost/demo", "app_data").listTables();
 
-        assertEquals(List.of(Map.of("name", "events", "type", "TABLE", "catalog", "demo", "schema", "app_data")),
+        assertEquals(List.of(Map.of("name", "events", "type", "TABLE", "catalog", "demo", "schema", "app_data", "comment", "Event history")),
                 result.get("tables"));
+    }
+
+    @Test
+    void mysqlNativeTableCommentsOverrideEmptyJdbcRemarksForBothTools() throws SQLException {
+        ResultSet tables = mock(ResultSet.class);
+        when(metadata.getTables(eq("demo"), nullable(String.class), anyString(), any(String[].class))).thenReturn(tables);
+        when(tables.next()).thenReturn(true, false);
+        when(tables.getString("TABLE_NAME")).thenReturn("ums_role");
+        when(tables.getString("TABLE_TYPE")).thenReturn("TABLE");
+        when(tables.getString("REMARKS")).thenReturn("");
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet comments = mock(ResultSet.class);
+        when(connection.prepareStatement("SELECT table_name, table_comment FROM information_schema.tables WHERE table_schema = ?"))
+                .thenReturn(statement);
+        when(statement.executeQuery()).thenReturn(comments);
+        when(comments.next()).thenReturn(true, false, true, false);
+        when(comments.getString(1)).thenReturn("ums_role");
+        when(comments.getString(2)).thenReturn("后台用户角色表");
+        var service = reads("jdbc:mysql://localhost/demo", "different_schema");
+        var listed = service.listTables();
+        assertEquals("后台用户角色表", ((Map<?, ?>) ((List<?>) listed.get("tables")).getFirst()).get("comment"));
+
+        ResultSet columns = mock(ResultSet.class);
+        ResultSet keys = mock(ResultSet.class);
+        when(metadata.getColumns("demo", "different\\_schema", "ums\\_role", "%")).thenReturn(columns);
+        when(metadata.getPrimaryKeys("demo", "different_schema", "ums_role")).thenReturn(keys);
+        when(columns.next()).thenReturn(true, false);
+        when(columns.getString("TABLE_NAME")).thenReturn("ums_role");
+        when(columns.getString("COLUMN_NAME")).thenReturn("id");
+        assertEquals("后台用户角色表", service.describeTable("ums_role").get("comment"));
+        // MySQL's database is the JDBC catalog, regardless of a supplied schema filter.
+        verify(statement, times(2)).setString(1, "demo");
+        verify(statement, times(2)).setQueryTimeout(10);
+        verify(comments, times(2)).close();
     }
 
     @Test

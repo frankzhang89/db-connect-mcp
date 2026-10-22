@@ -20,13 +20,13 @@ public class DatabaseTools {
         this.service = service;
     }
 
-    @McpTool(name = "db_list_tables", description = "List tables and views in the configured JDBC database and schema; returns at most 500 entries with catalog/schema information when available.",
+    @McpTool(name = "db_list_tables", description = "List tables and views in the configured JDBC database and schema; returns at most 500 entries with comments and catalog/schema information when available.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> listTables() {
         return service.listTables();
     }
 
-    @McpTool(name = "db_describe_table", description = "Inspect a table's column names, types, nullability, and primary key.",
+    @McpTool(name = "db_describe_table", description = "Inspect table/column comments, column types, sizes, nullability, defaults, auto-increment/identity flags, primary key, indexes, foreign keys, and unique constraints. Unsupported or unknown metadata is null; Oracle sequence associations are not inspected.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> describeTable(
             @McpToolParam(description = "Table name; quote mixed-case identifiers with double quotes when needed", required = true) String tableName,
