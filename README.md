@@ -138,12 +138,12 @@ After starting the server, configure this Streamable HTTP endpoint and the Beare
 http://127.0.0.1:8283/db-mcp
 ```
 
-The listening interface comes from `server.address`; see [Remote deployment](#remote-deployment). This version provides thirteen tools:
+The listening interface comes from `server.address`; see [Remote deployment](#remote-deployment). This version provides fourteen tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `db_list_tables` | List tables and views in the configured database (at most 500) |
-| `db_describe_table` | Inspect a table's columns and primary key, optionally selecting a schema |
+| `db_list_tables` | List tables and views with comments in the configured database (at most 500) |
+| `db_describe_table` | Inspect table/column comments, columns, defaults, auto-increment/identity flags, primary key, indexes, foreign keys, and unique constraints; optional schema override |
 | `db_query` | Run one parameterized, read-only `SELECT` query |
 | `db_execute` | Agent-controlled transaction: `BEGIN`, query/DML/TRUNCATE scripts, then explicit `COMMIT` or `ROLLBACK`; arguments are `sql` and `transactionId?` |
 | `db_switch_datasource` | Validate and switch the global JDBC target without restarting; memory-only |
@@ -158,6 +158,28 @@ The listening interface comes from `server.address`; see [Remote deployment](#re
 | `redis_select_db` | Switch the Redis database used by all Redis tools (SELECT) |
 
 `db_query` returns at most 100 rows and has a default timeout of 10 seconds. Redis scans and reads also have limits. These limits can be changed in `application.yml`. Redis values are decoded as UTF-8 text. Codex can see the data returned by a requested read, but the tools do not expose connection credentials.
+
+### Metadata response contract
+
+`db_list_tables.tables[]` adds `comment` (string or null) alongside `name`, `type`, and optional `catalog`/`schema`.
+`db_describe_table` keeps its existing fields and adds:
+
+| Field | Meaning |
+| --- | --- |
+| `comment` | Table or view comment; SQL Server uses the `MS_Description` extended property |
+| `columns[].comment` | Column comment |
+| `columns[].defaultValue` | Default value/expression as reported by JDBC, without evaluating it or reconstructing DDL; quoting varies by database |
+| `columns[].autoIncrement` | JDBC auto-increment flag, including MySQL `AUTO_INCREMENT`; unknown flags return null |
+| `columns[].identity` | Identity column flag for Oracle, SQL Server, and PostgreSQL; MySQL returns false; unknown/not supported returns null. PostgreSQL `serial` is not an Identity column |
+| `indexes[]` | `{name, unique, type, columns: [{name, expression, sortDirection}]}` |
+| `foreignKeys[]` | `{name, columns, referencedCatalog, referencedSchema, referencedTable, referencedColumns, updateRule, deleteRule}` |
+| `uniqueConstraints[]` | `{name, columns}` for actual UNIQUE constraints; excludes primary keys and standalone unique indexes where the database distinguishes them |
+
+Composite key/index columns retain their declared order. `sortDirection` is `ASC`, `DESC`, or null; expression index entries have `name: null` and an `expression`. Index types retain database-native names. Index column lists describe key columns, excluding PostgreSQL/SQL Server INCLUDE columns; SQL Server columnstore/XML/spatial indexes expose their indexed columns without a key sort direction. Filter predicates, prefix lengths, and index options are not returned. MySQL represents UNIQUE declarations as unique indexes/constraints, so these can appear in both lists. Foreign key rules are `CASCADE`, `RESTRICT`, `SET_NULL`, `NO_ACTION`, `SET_DEFAULT`, or null.
+
+An empty collection means discovery succeeded and found no objects; null means unsupported or unknown. Missing comments/defaults are null (or an empty comment if reported that way by the driver). Catalog permission/query failures are reported as errors, not as an empty collection. MySQL table comments are read from `information_schema.tables`, scoped to the connection's catalog, because JDBC table remarks can be empty even when comments exist. Oracle comments and Identity flags are read from `ALL_*` views, without changing connection remark settings. Oracle sequence/default-sequence/trigger associations are not inspected and no `sequence` field is returned.
+
+StarRocks continues to expose table/column comments and defaults supplied by its native driver; `identity` is null. Its `indexes`, `foreignKeys`, and `uniqueConstraints` are null because the corresponding [information schema views are placeholders](https://docs.starrocks.io/docs/sql-reference/information_schema/). This version does not parse `SHOW CREATE TABLE` or optimizer-only constraint properties to infer that metadata.
 
 ## Remote deployment
 

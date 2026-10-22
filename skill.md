@@ -17,8 +17,8 @@ See [README.md](README.md) for deployment, configuration, and dialect details.
 
 | Tool | Parameters | Behavior |
 | --- | --- | --- |
-| `db_list_tables` | — | Lists tables and views in the configured schema, at most 500; includes catalog/schema when the driver reports them. |
-| `db_describe_table` | `tableName`, `schemaName?` | Column names, types, sizes, nullability, and primary key. `schemaName` overrides metadata discovery for this call only. |
+| `db_list_tables` | — | Lists tables and views in the configured schema, at most 500; includes `comment` and catalog/schema when the driver reports them. |
+| `db_describe_table` | `tableName`, `schemaName?` | Table/column comments, names, types, sizes, nullability, defaults, auto-increment/identity flags, primary key, indexes, foreign keys, and unique constraints. `schemaName` overrides metadata discovery for this call only. See the metadata response contract in README.md. Oracle sequence associations are not inspected. |
 | `db_query` | `sql`, `parameters?`, `maxRows?` | One read-only `SELECT` (`WITH ... SELECT` allowed). Binds values via `?` placeholders. At most 100 rows, 10 s timeout, 4000 chars per cell (longer values are truncated and flagged). |
 
 Database tools return the `datasourceId` they actually used. The ID is diagnostic only; it does not pin later calls to that database.
