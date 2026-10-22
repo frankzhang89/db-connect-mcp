@@ -1,12 +1,12 @@
 package com.example.dbconnectmcp;
 
+import org.springframework.boot.Banner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 
 /**
- * Entry point. Boots the MCP server on the embedded servlet container with
- * the Streamable HTTP transport; see application.yml for the endpoint.
+ * Entry point. Boots Streamable HTTP or stdio according to application.yml.
  * JDBC auto-configuration is excluded because DatabaseRuntimeManager owns dynamic
  * pools rather than a single Spring-managed, permanently configured DataSource.
  */
@@ -14,6 +14,8 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 public class DbConnectMcpApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(DbConnectMcpApplication.class, args);
+        SpringApplication app = new SpringApplication(DbConnectMcpApplication.class);
+        app.setBannerMode(Banner.Mode.OFF);
+        app.run(args);
     }
 }

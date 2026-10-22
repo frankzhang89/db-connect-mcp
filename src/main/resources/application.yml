@@ -14,6 +14,8 @@ spring:
       server:
         name: db-connect-mcp
         version: 0.1.0
+        # false: Streamable HTTP with the existing launch scripts; true: agent-launched stdio, no HTTP port or bearer auth.
+        stdio: false
         protocol: STREAMABLE
         type: SYNC
         instructions: "Read and write access to the current JDBC database and Redis instance. JDBC data source switches apply to all clients and are memory-only. DDL requires dbmcp.write.allow-ddl. Credentials are never exposed in tool results."

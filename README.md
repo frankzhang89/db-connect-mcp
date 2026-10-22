@@ -1,6 +1,6 @@
 # db-connect-mcp
 
-A self-hostable MCP server with one current JDBC database and one Redis instance, providing read and write tools. Supported JDBC databases are MySQL, Oracle, Microsoft SQL Server, PostgreSQL, and StarRocks. Clients authenticate with a shared Bearer token and can switch the global JDBC data source without restarting. Startup database and Redis credentials stay on the server; switching requires supplying the new database credentials through a tool call.
+A self-hostable MCP server with one current JDBC database and one Redis instance, providing read and write tools over stdio or Streamable HTTP. Supported JDBC databases are MySQL, Oracle, Microsoft SQL Server, PostgreSQL, and StarRocks. HTTP clients authenticate with a shared Bearer token. Clients can switch the process-wide JDBC data source without restarting. Startup database and Redis credentials stay on the server; switching requires supplying the new database credentials through a tool call.
 
 ## Requirements
 
@@ -10,7 +10,30 @@ A self-hostable MCP server with one current JDBC database and one Redis instance
 
 ## Configuration
 
-Set the initial connection under `dbmcp.database`, Redis settings under `spring.data.redis`, and a shared token under `dbmcp.auth` in [`src/main/resources/application.yml`](src/main/resources/application.yml). Do not commit this file publicly after adding real credentials. Clients need the MCP endpoint and token. Read and write tools share the current database account. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` switches its logical database at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
+### Select the transport
+
+One JAR supports two mutually exclusive transports. Select the mode in `application.yml` and restart:
+
+```yaml
+spring:
+  ai:
+    mcp:
+      server:
+        stdio: false # false (default): Streamable HTTP; true: stdio
+        protocol: STREAMABLE
+        type: SYNC
+```
+
+| Mode | Startup | HTTP listener | Bearer authentication | Application logs |
+| --- | --- | --- | --- | --- |
+| Streamable HTTP (`stdio: false` or omitted) | Existing start/stop/restart scripts | Configured address and port | Existing `dbmcp.auth` settings | Existing stdout behavior |
+| stdio (`stdio: true`) | Client launches `java -jar <absolute-jar-path>` directly | None | Skipped automatically, including token validation | stderr only |
+
+Keep `protocol: STREAMABLE` in both modes; do not set `protocol: STDIO`. No Spring profile is needed. Standard Spring configuration overrides such as `--spring.ai.mcp.server.stdio=true` also work. In stdio mode the application enforces a non-web context, its stderr-only Logback configuration, and no banner, even if conflicting web/logging/banner options are supplied. `logging.level.*` remains configurable. Do not print ordinary messages to stdout or merge stderr into stdout with `2>&1`.
+
+Stdio does not use the launch scripts: those background the process and redirect its communication streams. The MCP client owns the child process and its pipes. A completed tool call leaves it running; closing stdin triggers application shutdown, rollback of retained transactions, and pool cleanup. Abrupt process termination cannot guarantee application cleanup. Each independently launched process has its own connection pools, selected data source, Redis selection, and transactions. Database and Redis credentials remain necessary in both modes; startup still validates the initial JDBC connection.
+
+Set the initial connection under `dbmcp.database`, Redis settings under `spring.data.redis`, and (for HTTP mode) a shared token under `dbmcp.auth` in [`src/main/resources/application.yml`](src/main/resources/application.yml). Do not commit this file publicly after adding real credentials. HTTP clients need the MCP endpoint and token; stdio clients need the Java launch command. Read and write tools share the current database account. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` switches its logical database at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
 
 Startup requires a usable YAML database connection. The service checks the JDBC type, establishes a connection, verifies it with `Connection.isValid`, and resolves the metadata schema before it becomes ready. Invalid credentials, unreachable databases, invalid schema settings, or validation timeouts fail startup. This does not verify permissions for every table or DDL operation. Redis connectivity is still checked when its tools are used.
 
@@ -54,7 +77,7 @@ Credentials and tokens in `application.yml` are readable by processes with acces
 
 ## Shared Bearer authentication
 
-Authentication defaults to enabled even when `dbmcp.auth.enabled` is omitted. Set `dbmcp.auth.token` directly in server YAML to a randomly generated long token (for example, 32 random bytes encoded as 64 hexadecimal characters). This configuration does not depend on an environment variable. The example `replace-with-a-random-long-token` is deliberately rejected; replace it before starting. A missing, blank, placeholder, or malformed token fails startup. Changing the token requires restarting the server and updating clients.
+In Streamable HTTP mode, authentication defaults to enabled even when `dbmcp.auth.enabled` is omitted. Set `dbmcp.auth.token` directly in server YAML to a randomly generated long token (for example, 32 random bytes encoded as 64 hexadecimal characters). This configuration does not depend on an environment variable. The example `replace-with-a-random-long-token` is deliberately rejected; replace it before starting HTTP mode. A missing, blank, placeholder, or malformed token fails HTTP startup. Changing the token requires restarting the server and updating clients. Stdio automatically skips HTTP authentication and token validation; no extra `dbmcp.auth.enabled=false` setting is needed. Existing auth settings apply again when switching back to HTTP.
 
 Configure the MCP client to send this header on **every** HTTP request, including initialization, tool discovery, tool calls, and session requests:
 
@@ -98,6 +121,8 @@ Read/write limits, pool sizing, and `dbmcp.write.allow-ddl` remain server-wide s
 
 ## Build and run
 
+The scripts below are for Streamable HTTP mode (`stdio: false`). For stdio use the direct client launch described under [Connect Codex](#connect-codex).
+
 The `<finalName>db-mcp</finalName>` setting in `pom.xml` controls the JAR filename. If you change it, set `DB_MCP_JAR_NAME` to the corresponding filename when using the startup scripts.
 
 A standard build creates the executable JAR at `target/db-mcp/db-mcp.jar`:
@@ -130,13 +155,90 @@ For deployment, put `db-mcp.jar` alongside the startup scripts. `start` and `res
 
 ## Connect Codex
 
-After starting the server, configure this Streamable HTTP endpoint and the Bearer request header in your MCP client:
+### Configuration file and server names
+
+Codex stores user-level MCP entries in `~/.codex/config.toml` (on Windows, normally `%USERPROFILE%\.codex\config.toml`). Trusted projects can also use a project-local `.codex/config.toml`. See the [official MCP configuration documentation](https://developers.openai.com/codex/mcp).
+
+In `[mcp_servers.db_connect]`, `db_connect` is a custom registration name, not a Java class, tool name, or Spring application name. Choose a distinct name for each server, such as `db_local` and `db_remote`, and avoid registering the same connection again through the MCP settings UI. A plugin's display name is not necessarily its MCP registration name; use distinct server names when configuring separate connections.
+
+After saving, reload MCP connections or restart the client, and confirm the server is connected and its tools are available. In Codex CLI, `/mcp` shows active servers. Then request an operation explicitly, for example: "Use db_connect's db_list_tables tool to list tables in the current database." Mentioning a server name does not install, configure, or connect it.
+
+### Stdio
+
+Set `spring.ai.mcp.server.stdio: true` in the server YAML, rebuild if editing the packaged YAML, and add a stdio entry to Codex's `config.toml`. Use the actual absolute JAR path (the example uses the default build output):
+
+```toml
+[mcp_servers.db_connect]
+command = "java"
+args = ["-jar", "D:/work/Repositories/gitRepositories/mcp/db-connect-mcp/target/db-mcp/db-mcp.jar"]
+cwd = "D:/work/Repositories/gitRepositories/mcp/db-connect-mcp"
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+```
+
+Use an absolute JDK 25 `java.exe` path for `command` if `java` on PATH resolves to another version. Configure either this command entry or an HTTP URL entry for the server. Do not manually start a background instance first; Codex starts its own process. Reload the client's MCP configuration and inspect its tools. No URL, port, Bearer header, or Spring profile is needed. Keep the startup timeout long enough for JDBC validation. External Spring YAML files can be supplied using `--spring.config.location=file:/...` in `args`.
+
+If the packaged YAML still has `stdio: false`, explicitly override it in the client launch arguments instead:
+
+```toml
+args = [
+  "-jar",
+  "D:/work/Repositories/gitRepositories/mcp/db-connect-mcp/target/db-mcp/db-mcp.jar",
+  "--spring.ai.mcp.server.stdio=true"
+]
+```
+
+Do not use `--spring.profiles.active=stdio`: this project selects the transport with the `stdio` property and does not provide a `stdio` profile. Use the freshly built `target/db-mcp/db-mcp.jar`, not a stale `target/db-mcp.jar` from an earlier build layout.
+
+### Select JDK 25 on Windows
+
+The simplest way to select a particular installed JDK is an absolute executable path. TOML literal strings (single quotes) preserve Windows backslashes without escaping:
+
+```toml
+command = 'D:\Program Files\Java\jdk-25.0.1\bin\java.exe'
+```
+
+Keep the other stdio fields unchanged. This selects that JDK regardless of `JAVA_HOME` or other JDK variables. A bare `command = "java"` instead uses the executable found on the client's PATH.
+
+To resolve an existing environment variable named `JDK25` at launch time, use PowerShell explicitly. `JDK25` must point to the JDK root directory, not `bin` or `java.exe`. Replace the entire server entry with this alternative; do not append a second `[mcp_servers.db_connect]` table:
+
+```toml
+[mcp_servers.db_connect]
+command = "powershell.exe"
+env_vars = ["JDK25"]
+args = [
+  "-NoLogo",
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  '& "$env:JDK25\bin\java.exe" -jar "D:/work/Repositories/gitRepositories/mcp/db-connect-mcp/target/db-mcp/db-mcp.jar" --spring.ai.mcp.server.stdio=true; exit $LASTEXITCODE'
+]
+cwd = "D:/work/Repositories/gitRepositories/mcp/db-connect-mcp"
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+```
+
+`env_vars` forwards `JDK25` from the Codex process environment; PowerShell expands `$env:JDK25` and the quotes handle spaces in its path. Do not put `%JDK25%` or `$env:JDK25` directly in `command` and expect shell expansion. After adding or changing a Windows environment variable, fully quit and reopen Codex so it inherits the updated value. If the variable is absent, fix it before launching; this configuration does not fall back to a different JDK. Do not add output banners, logging, background startup, or `2>&1` to the launch command.
+
+### Debug stdio manually
+
+To control tool parameters manually, run the official MCP Inspector instead of an agent:
+
+```powershell
+npx @modelcontextprotocol/inspector java -jar "D:/work/Repositories/gitRepositories/mcp/db-connect-mcp/target/db-mcp/db-mcp.jar"
+```
+
+Use the Inspector's stdio connection and tools view to list tools, fill arguments, and inspect results. Keep the same connection for a transaction: call `db_execute` with `sql: BEGIN`, then pass the returned `transactionId` on subsequent statements and COMMIT/ROLLBACK. A new connection/process cannot reuse an old handle. Inspector's own local web UI may listen on ports; the MCP server still communicates over stdio.
+
+### Streamable HTTP
+
+With `stdio: false`, start the server using the existing scripts, then configure this Streamable HTTP endpoint and the Bearer request header in your MCP client:
 
 ```text
 http://127.0.0.1:8283/db-mcp
 ```
 
-The listening interface comes from `server.address`; see [Remote deployment](#remote-deployment). This version provides thirteen tools:
+The listening interface comes from `server.address`; see [Remote deployment](#remote-deployment). Both modes expose these fourteen tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -239,5 +341,7 @@ mvn package
 ```
 
 Tests load all five real JDBC drivers and check URL acceptance, schema/name handling, read/write behavior, row limits, and SQL guards. Additional tests cover switch publication, concurrent leases, retirement, timeout/late completion, shutdown, authentication defaults, HTTP methods, and redaction. HTTP integration tests use both an in-process JDBC test double and a test-only H2 database. Transaction tests verify own-write visibility, isolation between connections, commit/rollback, script rejection and failure, original-target retention, expiry, session ownership/deletion, capacity recovery, result limits, implicit-commit warnings, and unknown commit outcomes. H2 is test-scoped and is not a supported production target. These tests do not establish compatibility with live MySQL, Oracle, SQL Server, PostgreSQL, or StarRocks servers.
+
+Stdio integration tests launch separate JVMs with real stdin/stdout pipes and a test-only H2 adapter. They verify tool discovery and parameter binding, hidden session context, commit/rollback, HTTP auth bypass, startup with an occupied HTTP port, protocol-only stdout, stderr diagnostics, and process exit/pool cleanup on EOF. An independent JDBC connection checks rollback after application shutdown. Additional checks cover EOF before initialization, input read failure, repeated shutdown signals, and failed database startup.
 
 After starting the server, use Codex's `/mcp` command to inspect the tool list, then try `db_list_tables`, `db_describe_table`, `db_query`, and the Redis tools with a least-privilege account. For each target database, verify a parameterized SELECT, metadata in the expected schema, and permitted DML/DDL in a disposable test schema. Use `SELECT 1 FROM dual` for Oracle and `SELECT 1` for the other engines. Real data access requires reachable services and credentials.

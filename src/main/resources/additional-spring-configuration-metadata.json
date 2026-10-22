@@ -3,13 +3,13 @@
     {
       "name": "dbmcp.auth.enabled",
       "type": "java.lang.Boolean",
-      "description": "Require a shared Bearer token on all MCP HTTP requests. Default true; set false explicitly to disable authentication.",
+      "description": "Require a shared Bearer token on all MCP HTTP requests. Default true; automatically bypassed in stdio mode.",
       "defaultValue": true
     },
     {
       "name": "dbmcp.auth.token",
       "type": "java.lang.String",
-      "description": "Shared Bearer token configured directly in server YAML. Required and non-placeholder when authentication is enabled; never logged or returned. Restart after changing it."
+      "description": "Shared Bearer token configured directly in server YAML. Required and non-placeholder when HTTP authentication is enabled; ignored in stdio mode. Never logged or returned. Restart after changing it."
     },
     {
       "name": "dbmcp.switch.timeout-seconds",
