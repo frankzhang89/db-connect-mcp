@@ -79,9 +79,10 @@ Credentials and tokens in `application.yml` are readable by processes with acces
 
 The [release workflow](.github/workflows/release.yml) runs when a tag starting with `v` is pushed. It installs Temurin JDK 25, checks that the tag matches the non-SNAPSHOT version in `pom.xml`, runs `mvn clean verify` (including tests), and validates that the result is a Spring Boot executable JAR with bundled dependencies. Only a successful build creates a GitHub Release with automatically generated release notes and these assets:
 
-- `db-mcp-<version>.jar` (copied from `target/db-mcp/db-mcp.jar`, excluding `.jar.original`)
 - `db-mcp-<version>.zip` and `db-mcp-<version>.tar.gz` (deployment bundles)
-- `SHA256SUMS` (SHA-256 checksums for the JAR and both archives)
+- `SHA256SUMS` (SHA-256 checksums for both archives)
+
+Each deployment bundle includes the executable JAR from `target/db-mcp/db-mcp.jar`, excluding `.jar.original`. No standalone JAR is uploaded to the Release.
 
 Both archives contain the same directory layout. The JAR inside keeps the stable name expected by the launchers:
 
@@ -115,10 +116,10 @@ For later releases, update `pom.xml` and the MCP server version in `src/main/res
 Run the downloaded JAR with JDK 25 or newer, supplying your deployment configuration:
 
 ```powershell
-java -jar db-mcp-0.1.0.jar --spring.config.additional-location=file:./application.yml
+java -jar db-mcp.jar --spring.config.additional-location=file:./application.yml
 ```
 
-The JAR and deployment bundles include the repository's `src/main/resources/application.yml`; keep its values suitable for public distribution and supply real deployment settings through the external configuration file. The application still requires a reachable database and appropriate Redis/authentication settings as described above. When using the launch scripts with the standalone versioned JAR instead of the deployment bundle, pass its path explicitly.
+The JAR and deployment bundles include the repository's `src/main/resources/application.yml`; keep its values suitable for public distribution and supply real deployment settings through the external configuration file. The application still requires a reachable database and appropriate Redis/authentication settings as described above.
 
 ## Shared Bearer authentication
 

@@ -74,8 +74,6 @@ jobs:
               if not any(name.startswith('BOOT-INF/lib/') and name.endswith('.jar') for name in jar.namelist()):
                   raise SystemExit('Runtime dependencies are missing from the JAR')
           Path('dist').mkdir(exist_ok=True)
-          asset = Path('dist') / f"db-mcp-{os.environ['RELEASE_VERSION']}.jar"
-          shutil.copyfile(source, asset)
 
           # Keep the deployed JAR name stable so both launchers work without arguments.
           bundle = Path('target/release') / f"db-mcp-{os.environ['RELEASE_VERSION']}"
@@ -94,7 +92,7 @@ jobs:
           with tarfile.open(tar_path, 'w:gz') as archive:
               archive.add(bundle, arcname=bundle.name, filter=archive_permissions)
           checksums = []
-          for path in (asset, zip_path, tar_path):
+          for path in (zip_path, tar_path):
               with path.open('rb') as stream:
                   digest = hashlib.file_digest(stream, 'sha256').hexdigest()
               checksums.append(f'{digest}  {path.name}\n')
@@ -112,7 +110,6 @@ jobs:
             release_options+=(--prerelease --latest=false)
           fi
           gh release create "$RELEASE_TAG" \
-            "dist/db-mcp-${RELEASE_VERSION}.jar" \
             "dist/db-mcp-${RELEASE_VERSION}.zip" \
             "dist/db-mcp-${RELEASE_VERSION}.tar.gz" \
             dist/SHA256SUMS \
