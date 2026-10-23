@@ -1,0 +1,122 @@
+name: Release runnable JAR
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import xml.etree.ElementTree as ET
+
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?', tag):
+              raise SystemExit('Expected a version tag such as v0.1.0 or v0.2.0-rc.1')
+          version = ET.parse('pom.xml').getroot().findtext('{http://maven.apache.org/POM/4.0.0}version')
+          if not version or version.endswith('-SNAPSHOT') or tag != f'v{version}':
+              raise SystemExit(f'Tag {tag} must match the non-SNAPSHOT pom.xml version: {version}')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write(f'RELEASE_VERSION={version}\n')
+          PY
+
+      - name: Test and build executable JAR
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      - name: Verify and prepare release assets
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import shutil
+          import tarfile
+          import zipfile
+
+          source = Path('target/db-mcp/db-mcp.jar')
+          with zipfile.ZipFile(source) as jar:
+              manifest = jar.read('META-INF/MANIFEST.MF').decode('utf-8').replace('\r\n', '\n').replace('\n ', '')
+              if 'Main-Class: org.springframework.boot.loader.launch.JarLauncher\n' not in manifest:
+                  raise SystemExit('Expected an executable Spring Boot JAR')
+              if 'Start-Class: com.example.dbconnectmcp.DbConnectMcpApplication\n' not in manifest:
+                  raise SystemExit('Application entry point is missing')
+              if not any(name.startswith('BOOT-INF/lib/') and name.endswith('.jar') for name in jar.namelist()):
+                  raise SystemExit('Runtime dependencies are missing from the JAR')
+          Path('dist').mkdir(exist_ok=True)
+          asset = Path('dist') / f"db-mcp-{os.environ['RELEASE_VERSION']}.jar"
+          shutil.copyfile(source, asset)
+
+          # Keep the deployed JAR name stable so both launchers work without arguments.
+          bundle = Path('target/release') / f"db-mcp-{os.environ['RELEASE_VERSION']}"
+          bundle.mkdir(parents=True, exist_ok=True)
+          shutil.copyfile(source, bundle / 'db-mcp.jar')
+          for name in ('db-mcp', 'db-mcp.cmd', 'db-mcp.ps1', 'LICENSE', 'README.md'):
+              shutil.copyfile(name, bundle / name)
+          shutil.copyfile('src/main/resources/application.yml', bundle / 'application.yml')
+          (bundle / 'db-mcp').chmod(0o755)
+          archive_base = str(Path('dist') / bundle.name)
+          zip_path = Path(shutil.make_archive(archive_base, 'zip', bundle.parent, bundle.name))
+          tar_path = Path(f'{archive_base}.tar.gz')
+          def archive_permissions(member):
+              member.mode = 0o755 if member.isdir() or member.name == f'{bundle.name}/db-mcp' else 0o644
+              return member
+          with tarfile.open(tar_path, 'w:gz') as archive:
+              archive.add(bundle, arcname=bundle.name, filter=archive_permissions)
+          checksums = []
+          for path in (asset, zip_path, tar_path):
+              with path.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              checksums.append(f'{digest}  {path.name}\n')
+          Path('dist/SHA256SUMS').write_text(''.join(checksums), encoding='utf-8')
+          PY
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          release_options=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            release_options+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" \
+            "dist/db-mcp-${RELEASE_VERSION}.jar" \
+            "dist/db-mcp-${RELEASE_VERSION}.zip" \
+            "dist/db-mcp-${RELEASE_VERSION}.tar.gz" \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            "${release_options[@]}"

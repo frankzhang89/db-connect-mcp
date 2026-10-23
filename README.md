@@ -71,9 +71,54 @@ StarRocks uses its own `com.starrocks:starrocks-connector-j` driver and `jdbc:st
 
 One server process has **one current global JDBC data source**, shared by every MCP client. Old pools exist temporarily while operations or explicit transactions acquired before a switch finish. Database selection is global; `db_execute` separately isolates transaction handles within their owning MCP sessions and pins each transaction to its original target. There is no `expectedDatasourceId` parameter. Use separate server processes if clients need independent default database targets.
 
-`application.yml` is packaged inside the JAR. Editing this packaged configuration requires rebuilding and restarting. Use `db_switch_datasource` for a runtime database change. Runtime switches never modify YAML or other configuration files, and restart restores the YAML connection.
+`application.yml` is packaged inside the JAR as the default configuration. Deployment bundles also provide an external copy next to the JAR and launchers; edit that copy and restart to override the packaged defaults without rebuilding. Both launchers start Java in their own directory so Spring Boot finds this external file. Use `db_switch_datasource` for a runtime database change. Runtime switches never modify YAML or other configuration files, and restart restores the configured YAML connection.
 
 Credentials and tokens in `application.yml` are readable by processes with access to the project or JAR. They are not included in tool results or application diagnostic objects. Database credentials supplied to the switch tool may be retained in the MCP client's tool history; the server cannot control client-side recording.
+
+## Automated GitHub Releases
+
+The [release workflow](.github/workflows/release.yml) runs when a tag starting with `v` is pushed. It installs Temurin JDK 25, checks that the tag matches the non-SNAPSHOT version in `pom.xml`, runs `mvn clean verify` (including tests), and validates that the result is a Spring Boot executable JAR with bundled dependencies. Only a successful build creates a GitHub Release with automatically generated release notes and these assets:
+
+- `db-mcp-<version>.jar` (copied from `target/db-mcp/db-mcp.jar`, excluding `.jar.original`)
+- `db-mcp-<version>.zip` and `db-mcp-<version>.tar.gz` (deployment bundles)
+- `SHA256SUMS` (SHA-256 checksums for the JAR and both archives)
+
+Both archives contain the same directory layout. The JAR inside keeps the stable name expected by the launchers:
+
+```text
+db-mcp-0.1.0/
+  db-mcp.jar
+  db-mcp
+  db-mcp.cmd
+  db-mcp.ps1
+  application.yml
+  LICENSE
+  README.md
+```
+
+For deployment, extract either archive and edit its `application.yml` for your database, Redis and HTTP authentication. On Windows run `.\db-mcp.cmd start` from the extracted directory; on Linux/macOS run `sh ./db-mcp start`. Use `stop` or `restart` for the other actions. Both launchers set the Java process working directory to the script directory, so Spring Boot loads the adjacent `application.yml` and uses it to override the configuration bundled in the JAR, including when the launcher is invoked from another directory. The `.tar.gz` archive also preserves the Unix launcher's executable permission. JDK 25 or newer is required.
+
+Commit and push the workflow before publishing the first version. For the current `pom.xml` version `0.1.0`, run:
+
+```powershell
+git add .github/workflows/release.yml README.md
+git commit -m "Add automatic runnable JAR releases"
+git push origin main
+git tag -a v0.1.0 -m "Release 0.1.0"
+git push origin v0.1.0
+```
+
+Watch the **Actions → Release runnable JAR** run, then download the JAR from [Releases](https://github.com/frankzhang89/db-connect-mcp/releases). GitHub Actions must be enabled for the repository and its policies must allow the workflow's `contents: write` permission. The workflow uses the automatically supplied `GITHUB_TOKEN`; no personal token or custom secret is needed. If a run fails before creating the Release, fix the cause and use **Re-run failed jobs** for a transient failure, or commit a source fix and publish a new version/tag. An existing Release is not overwritten.
+
+For later releases, update `pom.xml` and the MCP server version in `src/main/resources/application.yml`, commit and push, then push the corresponding new tag (for example, `v0.1.1`). A version such as `0.2.0-rc.1` with tag `v0.2.0-rc.1` is published as a prerelease. Pushing ordinary commits or changing a version file alone does not publish a Release.
+
+Run the downloaded JAR with JDK 25 or newer, supplying your deployment configuration:
+
+```powershell
+java -jar db-mcp-0.1.0.jar --spring.config.additional-location=file:./application.yml
+```
+
+The JAR and deployment bundles include the repository's `src/main/resources/application.yml`; keep its values suitable for public distribution and supply real deployment settings through the external configuration file. The application still requires a reachable database and appropriate Redis/authentication settings as described above. When using the launch scripts with the standalone versioned JAR instead of the deployment bundle, pass its path explicitly.
 
 ## Shared Bearer authentication
 
