@@ -188,7 +188,8 @@ start() {
     echo "Java: $java_command"
     touch "$LOG_FILE"
     launch_line=$(( $(wc -l <"$LOG_FILE") + 1 ))
-    nohup "$java_command" -jar "$JAR_PATH" >>"$LOG_FILE" 2>&1 </dev/null &
+    # Background launchers always use HTTP; agents launch their own stdio process directly.
+    nohup "$java_command" -jar "$JAR_PATH" --spring.ai.mcp.server.stdio=false >>"$LOG_FILE" 2>&1 </dev/null &
     new_pid=$!
     printf '%s\n' "$JAR_PATH" >"$JAR_PATH_FILE"
     printf '%s\n' "$new_pid" >"$PID_FILE"

@@ -216,7 +216,8 @@ function Start-Mcp([string]$requested) {
     }
     New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     Write-Output "Java: $java"
-    $process = Start-Process -FilePath $java -ArgumentList @('-jar', ('"' + $jarPath + '"')) `
+    # Background launchers always use HTTP; agents launch their own stdio process directly.
+    $process = Start-Process -FilePath $java -ArgumentList @('-jar', ('"' + $jarPath + '"'), '--spring.ai.mcp.server.stdio=false') `
         -WorkingDirectory $projectDir -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $outLog -RedirectStandardError $errLog
     Set-Content -LiteralPath $jarPathFile -Value $jarPath

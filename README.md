@@ -121,7 +121,7 @@ Read/write limits, pool sizing, and `dbmcp.write.allow-ddl` remain server-wide s
 
 ## Build and run
 
-The scripts below are for Streamable HTTP mode (`stdio: false`). For stdio use the direct client launch described under [Connect Codex](#connect-codex).
+The scripts below always launch Streamable HTTP mode by passing `--spring.ai.mcp.server.stdio=false`, overriding the YAML setting. This applies to Windows (`db-mcp.cmd` delegates to `db-mcp.ps1`) and Linux/macOS (`db-mcp`), for both `start` and `restart`. For stdio, agents launch the same JAR directly with `--spring.ai.mcp.server.stdio=true`, as described under [Connect Codex](#connect-codex). The two transports can run simultaneously in separate processes, each with independent connection pools and runtime selections.
 
 The `<finalName>db-mcp</finalName>` setting in `pom.xml` controls the JAR filename. If you change it, set `DB_MCP_JAR_NAME` to the corresponding filename when using the startup scripts.
 
