@@ -79,15 +79,18 @@ jobs:
           bundle = Path('target/release') / f"db-mcp-{os.environ['RELEASE_VERSION']}"
           bundle.mkdir(parents=True, exist_ok=True)
           shutil.copyfile(source, bundle / 'db-mcp.jar')
-          for name in ('db-mcp', 'db-mcp.cmd', 'db-mcp.ps1', 'LICENSE', 'README.md'):
+          for name in ('db-mcp', 'db-mcp.cmd', 'db-mcp.ps1',
+                       'db-mcp-stdio', 'db-mcp-stdio.cmd', 'db-mcp-stdio.ps1', 'LICENSE', 'README.md'):
               shutil.copyfile(name, bundle / name)
           shutil.copyfile('src/main/resources/application.yml', bundle / 'application.yml')
           (bundle / 'db-mcp').chmod(0o755)
+          (bundle / 'db-mcp-stdio').chmod(0o755)
           archive_base = str(Path('dist') / bundle.name)
           zip_path = Path(shutil.make_archive(archive_base, 'zip', bundle.parent, bundle.name))
           tar_path = Path(f'{archive_base}.tar.gz')
           def archive_permissions(member):
-              member.mode = 0o755 if member.isdir() or member.name == f'{bundle.name}/db-mcp' else 0o644
+              launchers = (f'{bundle.name}/db-mcp', f'{bundle.name}/db-mcp-stdio')
+              member.mode = 0o755 if member.isdir() or member.name in launchers else 0o644
               return member
           with tarfile.open(tar_path, 'w:gz') as archive:
               archive.add(bundle, arcname=bundle.name, filter=archive_permissions)

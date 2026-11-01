@@ -1,2 +1,5 @@
 db-mcp text eol=lf
 db-mcp.cmd text eol=crlf
+db-mcp-stdio text eol=lf
+db-mcp-stdio.cmd text eol=crlf
+db-mcp-stdio.ps1 text eol=crlf

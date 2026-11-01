@@ -27,11 +27,11 @@ spring:
 | Mode | Startup | HTTP listener | Bearer authentication | Application logs |
 | --- | --- | --- | --- | --- |
 | Streamable HTTP (`stdio: false` or omitted) | Existing start/stop/restart scripts | Configured address and port | Existing `dbmcp.auth` settings | Existing stdout behavior |
-| stdio (`stdio: true`) | Client launches `java -jar <absolute-jar-path>` directly | None | Skipped automatically, including token validation | stderr only |
+| stdio (`stdio: true`) | Client launches `db-mcp-stdio.cmd` (Windows) or `db-mcp-stdio` (Linux/macOS) | None | Skipped automatically, including token validation | stderr only |
 
 Keep `protocol: STREAMABLE` in both modes; do not set `protocol: STDIO`. No Spring profile is needed. Standard Spring configuration overrides such as `--spring.ai.mcp.server.stdio=true` also work. In stdio mode the application enforces a non-web context, its stderr-only Logback configuration, and no banner, even if conflicting web/logging/banner options are supplied. `logging.level.*` remains configurable. Do not print ordinary messages to stdout or merge stderr into stdout with `2>&1`.
 
-Stdio does not use the launch scripts: those background the process and redirect its communication streams. The MCP client owns the child process and its pipes. A completed tool call leaves it running; closing stdin triggers application shutdown, rollback of retained transactions, and pool cleanup. Abrupt process termination cannot guarantee application cleanup. Each independently launched process has its own connection pools, selected data source, Redis selection, and transactions. Database and Redis credentials remain necessary in both modes; startup still validates the initial JDBC connection.
+Stdio uses the dedicated foreground `db-mcp-stdio` launchers. The HTTP start/stop/restart scripts background the process and redirect its communication streams, so they are unsuitable for stdio. The MCP client owns the child process and its pipes. A completed tool call leaves it running; closing stdin triggers application shutdown, rollback of retained transactions, and pool cleanup. Abrupt process termination cannot guarantee application cleanup. Each independently launched process has its own connection pools, selected data source, Redis selection, and transactions. Database and Redis credentials remain necessary in both modes; startup still validates the initial JDBC connection.
 
 Set the initial connection under `dbmcp.database`, Redis settings under `spring.data.redis`, and (for HTTP mode) a shared token under `dbmcp.auth` in [`src/main/resources/application.yml`](src/main/resources/application.yml). Do not commit this file publicly after adding real credentials. HTTP clients need the MCP endpoint and token; stdio clients need the Java launch command. Read and write tools share the current database account. The default Redis database comes from `spring.data.redis.database`; `redis_select_db` switches its logical database at runtime. Redis tool limits (`dbmcp.redis.max-items`, `dbmcp.redis.max-value-chars`, `dbmcp.redis.max-scan-count`, `dbmcp.redis.max-databases`) are optional properties with sensible defaults.
 
@@ -92,6 +92,9 @@ db-mcp-0.1.0/
   db-mcp
   db-mcp.cmd
   db-mcp.ps1
+  db-mcp-stdio
+  db-mcp-stdio.cmd
+  db-mcp-stdio.ps1
   application.yml
   LICENSE
   README.md
@@ -167,7 +170,7 @@ Read/write limits, pool sizing, and `dbmcp.write.allow-ddl` remain server-wide s
 
 ## Build and run
 
-The scripts below always launch Streamable HTTP mode by passing `--spring.ai.mcp.server.stdio=false`, overriding the YAML setting. This applies to Windows (`db-mcp.cmd` delegates to `db-mcp.ps1`) and Linux/macOS (`db-mcp`), for both `start` and `restart`. For stdio, agents launch the same JAR directly with `--spring.ai.mcp.server.stdio=true`, as described under [Connect Codex](#connect-codex). The two transports can run simultaneously in separate processes, each with independent connection pools and runtime selections.
+The scripts below always launch Streamable HTTP mode by passing `--spring.ai.mcp.server.stdio=false`, overriding the YAML setting. This applies to Windows (`db-mcp.cmd` delegates to `db-mcp.ps1`) and Linux/macOS (`db-mcp`), for both `start` and `restart`. For stdio, use the [stdio launchers](#stdio-launchers). The two transports can run simultaneously in separate processes, each with independent connection pools and runtime selections.
 
 The `<finalName>db-mcp</finalName>` setting in `pom.xml` controls the JAR filename. If you change it, set `DB_MCP_JAR_NAME` to the corresponding filename when using the startup scripts.
 
@@ -200,6 +203,35 @@ The JDK environment variable name is configurable near the top of each launcher:
 If startup fails because a port is already in use, the launcher reports the conflicting port, owner PID, executable, and program directory. For Java processes launched with `-jar`, it also reports the application JAR and uses its directory when resolvable. Linux diagnostics use `ss` (iproute2), `lsof`, or `fuser`; process details can be unavailable when permissions prevent inspection or the owner has already exited. The scripts do not terminate the conflicting process.
 
 For deployment, put `db-mcp.jar` alongside the startup scripts. `start` and `restart` default to that sibling JAR, regardless of the caller's working directory or the previously started JAR. The optional second argument can specify a different JAR file or directory; `DB_MCP_JAR_PATH` and `DB_MCP_EXPORT_PATH` also override the default. `DB_MCP_JAR_NAME` can change the expected filename. The recorded JAR path is used only to identify the managed process when checking or stopping it. The scripts store the process ID and logs in the script directory's `run/` folder.
+
+### Stdio launchers
+
+Agents can execute a launcher without supplying any Java or Spring arguments:
+
+```powershell
+# Windows (delegates to db-mcp-stdio.ps1)
+.\db-mcp-stdio.cmd
+```
+
+```sh
+# Linux/macOS
+sh /opt/db-mcp/db-mcp-stdio
+# Or, once executable: /opt/db-mcp/db-mcp-stdio
+```
+
+Configure `db-mcp-stdio.ps1` on Windows or `db-mcp-stdio` on Linux/macOS near the top:
+
+| Setting | Windows PowerShell | Linux/macOS shell |
+| --- | --- | --- |
+| Default system JDK | `$jdkHome = 'JAVA_HOME'` | `JDK_HOME=JAVA_HOME` |
+| Named JDK environment variable | `$jdkHome = 'JDK25'` | `JDK_HOME=JDK25` |
+| Absolute JDK home | `$jdkHome = 'D:\Program Files\Java\jdk-25.0.1'` | `JDK_HOME='/opt/jdk-25'` |
+
+The default uses `JAVA_HOME`, then Java from `PATH` if `JAVA_HOME` is empty/unset. An explicitly selected environment variable must exist and contain the JDK home. A configured home with a missing Java executable fails with an error on stderr. JDK 25 or newer is required. Environment variables must be available to the agent process.
+
+The JAR defaults to `db-mcp.jar` beside the script, falling back to `target/db-mcp/db-mcp.jar` for a source checkout. Edit `$jarPath` / `JAR_PATH` to select another absolute JAR path. Configure JVM options in `$jvmOptions` (PowerShell) or before `-jar` in `set --` (shell), and Spring options in `$springOptions` or after the JAR path. The default JVM heap is `-Xms64m -Xmx512m`. The stdio flag, `STREAMABLE` protocol, non-web mode, disabled banner, and stderr logging are already configured. No YAML transport change or client-side Spring arguments are needed.
+
+The working directory is always the script directory, so an adjacent `application.yml` supplies the database and Redis settings even when invoked elsewhere. Each invocation starts a foreground process, preserves stdin/stdout/stderr as raw bytes, and propagates its exit code. There is no action menu, background service, PID file, or exit pause. Stdout carries only MCP traffic; do not merge stderr into stdout. Both release archives include these scripts.
 
 ## Connect Codex
 

@@ -1,0 +1,41 @@
+#!/usr/bin/env sh
+set -eu
+
+# JDK home directory (absolute path), or the name of a JDK home environment variable.
+# Default: JAVA_HOME; if JAVA_HOME is empty/unset, use java from PATH.
+JDK_HOME=JAVA_HOME
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Configure the JAR here. Prefer a deployed sibling JAR, then the local build output.
+JAR_PATH="$PROJECT_DIR/db-mcp.jar"
+if [ ! -f "$JAR_PATH" ]; then JAR_PATH="$PROJECT_DIR/target/db-mcp/db-mcp.jar"; fi
+# Configure JVM options before -jar and Spring options after the JAR path.
+set -- -Xms64m -Xmx512m -jar "$JAR_PATH" \
+    --spring.ai.mcp.server.stdio=true \
+    --spring.ai.mcp.server.protocol=STREAMABLE \
+    --spring.main.web-application-type=none \
+    --spring.main.banner-mode=off \
+    --logging.config=classpath:logback-stdio.xml
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+case "$JDK_HOME" in
+    /*) jdk_directory=$JDK_HOME ;;
+    ''|[0-9]*|*[!A-Za-z0-9_]*) fail 'JDK_HOME must be an absolute JDK home path or an environment variable name.' ;;
+    *)
+        jdk_directory=$(printenv "$JDK_HOME" 2>/dev/null || true)
+        if [ -z "$jdk_directory" ] && [ "$JDK_HOME" != JAVA_HOME ]; then
+            fail "JDK environment variable is empty or unset: $JDK_HOME"
+        fi
+        ;;
+esac
+if [ -n "$jdk_directory" ]; then
+    java_command="$jdk_directory/bin/java"
+    [ -x "$java_command" ] || fail "Java executable not found: $java_command"
+else
+    java_command=$(command -v java) || fail 'Java not found in PATH.'
+fi
+[ -f "$JAR_PATH" ] || fail "JAR not found: $JAR_PATH; build the project or configure JAR_PATH in this script."
+
+# Keep stdout exclusively for MCP; inherit stdin/stderr and replace the shell process.
+cd "$PROJECT_DIR"
+exec "$java_command" "$@"
