@@ -13,7 +13,7 @@ spring:
     mcp:
       server:
         name: db-connect-mcp
-        version: 0.1.0
+        version: 0.1.1
         # false: Streamable HTTP with the existing launch scripts; true: agent-launched stdio, no HTTP port or bearer auth.
         stdio: false
         protocol: STREAMABLE
