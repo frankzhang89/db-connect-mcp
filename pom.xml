@@ -13,7 +13,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>db-connect-mcp</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
     <name>db-connect-mcp</name>
     <description>JDBC database and Redis MCP server with read and write tools</description>
 
