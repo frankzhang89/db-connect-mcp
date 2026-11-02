@@ -28,6 +28,10 @@ public class ReadOnlySqlGuard {
 
     /** Rejects unsupported syntax before a service acquires any data source lease. */
     public void validate(String sql) {
+        inspect(sql);
+    }
+
+    ExplainSql inspect(String sql) {
         // Reject empty or oversized input.
         if (sql == null || sql.isBlank() || sql.length() > 20_000) {
             throw new IllegalArgumentException("SQL must not be empty and must not exceed 20000 characters.");
@@ -41,8 +45,16 @@ public class ReadOnlySqlGuard {
         }
         // Parse and confirm the root statement is a SELECT (covers WITH ... SELECT).
         try {
-            if (!(SqlParser.parse(sql) instanceof Select select)) {
-                throw new IllegalArgumentException("Only SELECT queries are allowed, including SELECT queries that start with WITH.");
+            var statement = SqlParser.parse(sql);
+            var explain = ExplainSql.from(sql, statement);
+            if (explain != null) {
+                if (explain.oracleSyntax()) {
+                    throw new IllegalArgumentException("EXPLAIN PLAN FOR requires db_execute.");
+                }
+                return explain;
+            }
+            if (!(statement instanceof Select select)) {
+                throw new IllegalArgumentException("Only SELECT, WITH SELECT, and ordinary EXPLAIN queries are allowed.");
             }
             // Traverse nested SELECTs and CTEs too: the root alone is insufficient.
             new TablesNamesFinder<Void>() {
@@ -64,6 +76,7 @@ public class ReadOnlySqlGuard {
                     return super.visit(item, context);
                 }
             }.getTables((net.sf.jsqlparser.statement.Statement) select);
+            return null;
         }
         catch (JSQLParserException ex) {
             throw new IllegalArgumentException("The query SQL could not be parsed and was rejected.");

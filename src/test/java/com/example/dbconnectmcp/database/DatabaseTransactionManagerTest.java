@@ -106,6 +106,21 @@ class DatabaseTransactionManagerTest {
     }
 
     @Test
+    void explainReturnsAPlanInAMixedScriptWithoutCommittingWrites() throws Exception {
+        String id = begin("session-a");
+        var result = execute(id, "UPDATE account SET balance=900 WHERE id=1; EXPLAIN SELECT * FROM account WHERE id=1; SELECT balance FROM account WHERE id=1");
+        var entries = results(result);
+        assertEquals(3, entries.size());
+        assertEquals("QUERY", entries.get(1).get("type"));
+        assertEquals(1, entries.get(1).get("statementIndex"));
+        assertEquals(1, entries.get(1).get("rowCount"));
+        assertEquals(List.of(Map.of("BALANCE", 900)), entries.get(2).get("rows"));
+        assertEquals(1000, balance());
+        execute(id, "ROLLBACK");
+        assertEquals(1000, balance());
+    }
+
+    @Test
     void separatesIdsWithinOneSessionAndRejectsCrossSessionAccess() {
         String a = begin("session-a");
         String b = begin("session-a");

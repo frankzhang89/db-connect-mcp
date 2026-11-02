@@ -18,6 +18,7 @@ public class DatabaseTransactionTools {
     @McpTool(name = "db_execute", description = "Explicit agent-controlled transaction SQL. Send BEGIN without transactionId "
             + "to obtain an ID, then pass it on every query/DML/script and COMMIT or ROLLBACK. The ID belongs to this MCP session. "
             + "Queries see this transaction's own writes. No automatic commit; execution errors require ROLLBACK. "
+            + "EXPLAIN SELECT/WITH SELECT returns an estimated plan; Oracle uses PLAN_TABLE/DBMS_XPLAN and SQL Server uses SHOWPLAN_XML on this connection. Oracle also accepts EXPLAIN PLAN FOR. No ANALYZE, options, or explained writes. "
             + "TRUNCATE is allowed; other DDL, CALL, dynamic SQL, and session-control commands are rejected. "
             + "WARNING: MySQL/Oracle TRUNCATE may commit earlier writes and cannot be rolled back. "
             + "Transactions pin their original data source across switches and expire when idle. "
@@ -25,7 +26,7 @@ public class DatabaseTransactionTools {
             annotations = @McpTool.McpAnnotations(readOnlyHint = false, destructiveHint = true,
                     idempotentHint = false, openWorldHint = true))
     public CallToolResult execute(McpSyncRequestContext context,
-            @McpToolParam(description = "BEGIN; a query/DML/TRUNCATE script; or standalone COMMIT/ROLLBACK", required = true) String sql,
+            @McpToolParam(description = "BEGIN; a query/EXPLAIN SELECT/DML/TRUNCATE script; or standalone COMMIT/ROLLBACK", required = true) String sql,
             @McpToolParam(description = "ID returned by BEGIN. Required except when opening a new transaction.", required = false) String transactionId) {
         // Use the SDK's verified exchange context, not an agent-supplied session field.
         // Context parameters are injected by Spring AI and excluded from inputSchema.

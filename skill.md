@@ -19,7 +19,7 @@ See [README.md](README.md) for deployment, configuration, and dialect details.
 | --- | --- | --- |
 | `db_list_tables` | — | Lists tables and views in the configured schema, at most 500; includes `comment` and catalog/schema when the driver reports them. |
 | `db_describe_table` | `tableName`, `schemaName?` | Table/column comments, names, types, sizes, nullability, defaults, auto-increment/identity flags, primary key, indexes, foreign keys, and unique constraints. `schemaName` overrides metadata discovery for this call only. See the metadata response contract in README.md. Oracle sequence associations are not inspected. |
-| `db_query` | `sql`, `parameters?`, `maxRows?` | One read-only `SELECT` (`WITH ... SELECT` allowed). Binds values via `?` placeholders. At most 100 rows, 10 s timeout, 4000 chars per cell (longer values are truncated and flagged). |
+| `db_query` | `sql`, `parameters?`, `maxRows?` | One read-only `SELECT` (`WITH ... SELECT` allowed), or ordinary `EXPLAIN SELECT/WITH SELECT` on MySQL/PostgreSQL/StarRocks. Binds values via `?` placeholders. At most 100 rows, 10 s timeout, 4000 chars per cell (longer values are truncated and flagged). |
 
 Database tools return the `datasourceId` they actually used. The ID is diagnostic only; it does not pin later calls to that database.
 
@@ -29,7 +29,7 @@ Database tools return the `datasourceId` they actually used. The ID is diagnosti
 | --- | --- | --- |
 | `db_execute_dml` | `sql`, `parameters?` | One `INSERT` / `UPDATE` / `DELETE` / `MERGE` / `UPSERT`. Returns `affectedRows`; `INSERT` on MySQL and SQL Server also returns up to 50 `generatedKeys`. |
 | `db_execute_ddl` | `sql` | One `CREATE` / `ALTER` / `DROP` / `TRUNCATE` / `RENAME`. Destructive; may be disabled server-side (`dbmcp.write.allow-ddl=false`). |
-| `db_execute` | `sql`, `transactionId?` | Explicit transaction: BEGIN returns an ID; queries/DML/TRUNCATE scripts and COMMIT/ROLLBACK require that ID. Detailed workflow below. |
+| `db_execute` | `sql`, `transactionId?` | Explicit transaction: BEGIN returns an ID; queries/EXPLAIN/DML/TRUNCATE scripts and COMMIT/ROLLBACK require that ID. Detailed workflow below. |
 
 ### Connection
 
@@ -91,7 +91,7 @@ The tool exposes exactly two fields:
 
 | Field | Meaning |
 | --- | --- |
-| `sql` | Required. A standalone transaction command, one query/DML/TRUNCATE statement, or a mixed semicolon-separated script. |
+| `sql` | Required. A standalone transaction command, one query/EXPLAIN SELECT/DML/TRUNCATE statement, or a mixed semicolon-separated script. |
 | `transactionId` | Omit only for BEGIN. Otherwise pass the exact ID returned by the server; never invent or reuse an ended ID. |
 
 The current MCP session is injected by the server. Keep that session across calls and send the Bearer header every time. IDs are bound to their creating session, not to an agent name. Multiple agents in the same session must each open their own transaction and keep their IDs separate. Sharing an ID within that session intentionally shares one connection and transaction. Calls on one ID are serialized; different IDs may run concurrently, subject to pool capacity and database locks.
@@ -149,13 +149,23 @@ Do not issue both commands as a normal sequence: the first successful completion
 
 ### Accepted SQL and scripts
 
-- Queries and CTEs, including supported data-modifying CTEs; INSERT, UPDATE, DELETE, MERGE, UPSERT; locking reads; parser-supported RETURNING/OUTPUT; and **TRUNCATE** are allowed.
+- Queries and CTEs, including supported data-modifying CTEs; ordinary EXPLAIN for read-only SELECTs; INSERT, UPDATE, DELETE, MERGE, UPSERT; locking reads; parser-supported RETURNING/OUTPUT; and **TRUNCATE** are allowed.
 - Other DDL is rejected, including CREATE, ALTER, DROP, and RENAME. SELECT INTO creating a table is rejected, including inside nested queries. CALL/EXEC, anonymous procedure blocks, server-side PREPARE/dynamic SQL, transaction/session setting commands, and external SQL execution helpers are not accepted.
 - The complete script is parsed and validated before the first statement executes. If a late statement is forbidden, none of that call's earlier statements execute. This does not undo earlier successful calls in the transaction.
 - A valid script executes sequentially on the retained connection. An execution error stops all remaining statements and marks the transaction `ROLLBACK_ONLY`. Earlier statements may have modified data; explicitly roll back.
-- Comments outside quoted literals are rejected. Semicolons inside supported quoted strings or identifiers do not separate statements. One trailing separator is accepted; empty statements are rejected. The original statement text is retained for execution, apart from outer separators and SQL Server MERGE's required terminator.
+- Comments outside quoted literals are rejected. Semicolons inside supported quoted strings or identifiers do not separate statements. One trailing separator is accepted; empty statements are rejected. The original statement text is retained for execution, apart from outer separators, SQL Server MERGE's required terminator, and the EXPLAIN wrapper adaptation described below. EXPLAIN inner queries also inherit the independent read-only guard's stricter text restrictions.
 - This tool has **no `parameters` array** and no client-supplied `maxRows`. Use trusted SQL literals, escape values according to the target dialect, and never interpolate untrusted text. `?` placeholders cannot be bound here; choose an independent parameterized tool when a shared transaction is unnecessary.
-- Use target-native syntax; there is no cross-database SQL translation. JSqlParser may reject some valid vendor syntax, including unsupported OUTPUT/TRUNCATE variants. Do not bypass rejection through stored procedures or dynamic SQL. Existing functions/triggers can have indirect or external effects, and sequence increments may not roll back; SQL filtering is not a sandbox for arbitrary database code.
+- Use target-native syntax for queries and writes; only the EXPLAIN wrapper is adapted across databases. JSqlParser may reject some valid vendor syntax, including unsupported OUTPUT/TRUNCATE variants. Do not bypass rejection through stored procedures or dynamic SQL. Existing functions/triggers can have indirect or external effects, and sequence increments may not roll back; SQL filtering is not a sandbox for arbitrary database code.
+
+### Estimated execution plans
+
+- `db_query`: use `EXPLAIN SELECT ...` or `EXPLAIN WITH ... SELECT ...` on MySQL/PostgreSQL/StarRocks; `?` parameters remain supported subject to the driver. Oracle/SQL Server plans require `db_execute`.
+- `db_execute`: send BEGIN, then `{"transactionId":"<returned ID>","sql":"EXPLAIN SELECT ..."}`, then explicit COMMIT or ROLLBACK. This may also appear in a mixed script. MySQL/PostgreSQL use native EXPLAIN; StarRocks still rejects BEGIN.
+- Oracle also accepts `EXPLAIN PLAN FOR SELECT ...` (or WITH SELECT). The server generates its own statement ID, reads DBMS_XPLAN, and deletes only its own plan rows on the retained connection. Plan-table generation/read/delete privileges and DBMS_XPLAN access are needed. No automatic commit occurs.
+- SQL Server translates `EXPLAIN SELECT ...` into separate SHOWPLAN_XML ON / query / OFF calls on the retained connection. Query and SHOWPLAN permissions are needed. Never send GO or raw SHOWPLAN/STATISTICS session commands.
+- Only estimated plans for read-only SELECTs are supported. The inner query must pass the independent read-only guard even within `db_execute`. No ANALYZE, EXPLAIN options (including FORMAT/VERBOSE/LOGICAL), explained writes, or custom plan tables/statement IDs. Inner SQL still uses target-native syntax.
+- Results use the existing QUERY columns/rows contract and configured limits. Check row and cell truncation flags; XML/text plans may be incomplete.
+- Normal execution failures require ROLLBACK. `PLAN_CLEANUP_FAILED` means cleanup/restoration failed: state is UNKNOWN, the handle is invalidated, and the connection is discarded. Verify state independently and do not retry writes/COMMIT blindly. Cleanup gets a bounded attempt after deadline expiry.
 
 ### TRUNCATE: permitted, with database-specific rollback behavior
 
@@ -190,6 +200,7 @@ Failures use MCP `isError: true`; parse the JSON text body as well as checking t
 | Code/state | Agent action |
 | --- | --- |
 | `SQL_REJECTED` | Nothing from this call executed. Correct the SQL; an existing transaction remains usable. |
+| `PLAN_CLEANUP_FAILED` | Oracle plan cleanup or SQL Server SHOWPLAN restoration failed. Handle invalidated and connection discarded; verify database state independently. |
 | `TRANSACTION_REQUIRED` / `NESTED_TRANSACTION` | Fix the ID/control-command usage; no implicit transaction is created. |
 | `TRANSACTION_NOT_FOUND` / `TRANSACTION_ENDED` / `TRANSACTION_EXPIRED` | Do not replay writes automatically. Determine whether the prior transaction ended or expired; IDs are never restored. |
 | `TRANSACTION_LIMIT` / `BEGIN_FAILED` / `TRANSACTIONS_UNSUPPORTED` | No usable new handle was returned. Resolve capacity/support/connectivity before opening another transaction. |

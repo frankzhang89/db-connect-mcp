@@ -324,8 +324,8 @@ The listening interface comes from `server.address`; see [Remote deployment](#re
 | --- | --- |
 | `db_list_tables` | List tables and views with comments in the configured database (at most 500) |
 | `db_describe_table` | Inspect table/column comments, columns, defaults, auto-increment/identity flags, primary key, indexes, foreign keys, and unique constraints; optional schema override |
-| `db_query` | Run one parameterized, read-only `SELECT` query |
-| `db_execute` | Agent-controlled transaction: `BEGIN`, query/DML/TRUNCATE scripts, then explicit `COMMIT` or `ROLLBACK`; arguments are `sql` and `transactionId?` |
+| `db_query` | Run one parameterized, read-only `SELECT` query or ordinary `EXPLAIN SELECT` on MySQL/PostgreSQL/StarRocks |
+| `db_execute` | Agent-controlled transaction: `BEGIN`, query/EXPLAIN/DML/TRUNCATE scripts, then explicit `COMMIT` or `ROLLBACK`; arguments are `sql` and `transactionId?` |
 | `db_switch_datasource` | Validate and switch the global JDBC target without restarting; memory-only |
 | `redis_scan_keys` | Scan keys with cursor-based pagination |
 | `redis_inspect_key` | Inspect a key's type, TTL, and size |
@@ -338,6 +338,33 @@ The listening interface comes from `server.address`; see [Remote deployment](#re
 | `redis_select_db` | Switch the Redis database used by all Redis tools (SELECT) |
 
 `db_query` returns at most 100 rows and has a default timeout of 10 seconds. Redis scans and reads also have limits. These limits can be changed in `application.yml`. Redis values are decoded as UTF-8 text. Codex can see the data returned by a requested read, but the tools do not expose connection credentials.
+
+### Estimated execution plans
+
+Both SQL tools accept ordinary `EXPLAIN SELECT ...` and `EXPLAIN WITH ... SELECT ...`. The inner query must pass the read-only guard: explained writes, write-bearing CTEs, SELECT INTO, locking clauses, and known side-effect functions are rejected. EXPLAIN options are not supported, including `ANALYZE` (even `ANALYZE FALSE`), `FORMAT`, `VERBOSE`, and `LOGICAL`. These tools return estimated plans, not actual runtime statistics.
+
+| Database | `db_query` | `db_execute` with a transaction ID |
+| --- | --- | --- |
+| MySQL / PostgreSQL | Native `EXPLAIN`, with optional `?` bindings | Native `EXPLAIN`; use SQL literals |
+| StarRocks | Native `EXPLAIN`, with driver-supported bindings | Still rejected at BEGIN: explicit transactions are unsupported |
+| Oracle | Use `db_execute` | `EXPLAIN SELECT ...` or native `EXPLAIN PLAN FOR SELECT ...`; generates a unique statement ID, runs EXPLAIN PLAN, reads `DBMS_XPLAN.DISPLAY`, then deletes only its own plan rows on the retained connection |
+| SQL Server | Use `db_execute` | `EXPLAIN SELECT ...`; enables `SHOWPLAN_XML`, reads the estimated XML plan, then disables SHOWPLAN in separate JDBC batches on the retained connection |
+
+Example for `db_query`:
+
+```json
+{"sql":"EXPLAIN SELECT id FROM users WHERE id = ?","parameters":[1]}
+```
+
+For `db_execute`, send `BEGIN` first, then use its returned ID:
+
+```json
+{"transactionId":"tx-11111111-1111-4111-8111-111111111111","sql":"EXPLAIN SELECT id FROM users WHERE id = 1"}
+```
+
+Finish with explicit COMMIT or ROLLBACK. Plan generation never commits the transaction automatically. Only the EXPLAIN wrapper is adapted; the inner SELECT must use the target database's syntax. Do not send `SET SHOWPLAN_*`, `SET STATISTICS_*`, `GO`, custom plan-table/statement-ID clauses, or manual plan-read scripts to request this adaptation. Oracle requires privileges to generate/read/delete its PLAN_TABLE rows and access DBMS_XPLAN; SQL Server requires query and SHOWPLAN permissions. Plans use the existing query result format, row/cell limits, truncation flags, and timeouts; large XML/text plans may be truncated.
+
+The complete transaction script is validated before execution, including rejection of Oracle-only syntax on other targets. Execution failures normally mark the transaction ROLLBACK_ONLY. If Oracle plan cleanup or SQL Server SHOWPLAN restoration fails, the tool returns `PLAN_CLEANUP_FAILED` with `state: "UNKNOWN"`, invalidates the transaction handle, and discards its connection. Do not retry writes or COMMIT with that ID; verify database state independently. Cleanup gets a bounded attempt even after the script deadline expires. Vendor JDBC sequencing is covered with test doubles; live engine/version compatibility requires verification against your servers.
 
 ### Metadata response contract
 
@@ -393,7 +420,7 @@ Save the returned ID, then use it in place of `tx-...`:
 
 Use the target engine's locking syntax; `FOR UPDATE` is not SQL Server syntax. Choose `COMMIT` instead of `ROLLBACK` when the checks pass. Ordinary SQL without an ID is rejected rather than silently auto-committed. Ended, unknown, or expired IDs never create replacement transactions. No parameter array is exposed: write trusted SQL literals with correct escaping, and never concatenate untrusted user text. The server preserves statement text, removing outer separators; it adds the terminator required by SQL Server MERGE.
 
-**SQL scope.** The server validates the complete script before executing its first statement. It accepts parser-supported queries/CTEs, INSERT/UPDATE/DELETE/MERGE/UPSERT, locking reads, supported RETURNING/OUTPUT row sets, and **TRUNCATE**. Other DDL, SELECT INTO, CALL/EXEC, anonymous procedure blocks, dynamic SQL, session configuration, and embedded transaction controls are rejected. Savepoints and nested transactions are not implemented. Comments outside quoted literals are rejected, including executable MySQL comments. Semicolons inside supported quoted literals/identifiers do not split statements. Parser acceptance does not imply that the target engine accepts the syntax; vendor constructs outside the parser's supported grammar are rejected. Triggers, existing functions, external effects, sequence changes, and nontransactional storage are governed by database permissions and engine semantics, not made reversible by this tool.
+**SQL scope.** The server validates the complete script before executing its first statement. It accepts parser-supported queries/CTEs, ordinary EXPLAIN for read-only SELECTs (see Estimated execution plans above), INSERT/UPDATE/DELETE/MERGE/UPSERT, locking reads, supported RETURNING/OUTPUT row sets, and **TRUNCATE**. Other DDL, SELECT INTO, CALL/EXEC, anonymous procedure blocks, dynamic SQL, session configuration, and embedded transaction controls are rejected. Savepoints and nested transactions are not implemented. Comments outside quoted literals are rejected, including executable MySQL comments. Semicolons inside supported quoted literals/identifiers do not split statements; EXPLAIN inner queries inherit the independent read-only guard's stricter text restrictions. Parser acceptance does not imply that the target engine accepts the syntax; vendor constructs outside the parser's supported grammar are rejected. Triggers, existing functions, external effects, sequence changes, and nontransactional storage are governed by database permissions and engine semantics, not made reversible by this tool.
 
 **TRUNCATE is an explicit exception to the DDL ban.** On [MySQL](https://dev.mysql.com/doc/refman/8.4/en/truncate-table.html) and [Oracle](https://docs.oracle.com/en/database/oracle/oracle-database/21/sqlrf/TRUNCATE-TABLE.html), it cannot be rolled back and may implicitly commit earlier work, including before a failing TRUNCATE attempt. After an attempt on these engines, responses retain `implicitCommitPossible: true`, `rollbackScope: "SINCE_LAST_IMPLICIT_COMMIT"`, and a warning through transaction completion. The handle stays usable for later statements, but no longer represents one atomic unit from BEGIN. `ROLLBACK` cannot undo work already committed. Use DELETE instead when full data rollback is required. [PostgreSQL](https://www.postgresql.org/docs/current/sql-truncate.html) and [SQL Server](https://learn.microsoft.com/en-us/sql/t-sql/statements/truncate-table-transact-sql?view=sql-server-ver17) support transactional TRUNCATE subject to engine restrictions. This exception is independent of `dbmcp.write.allow-ddl`, which controls only the old DDL tool.
 

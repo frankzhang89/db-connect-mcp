@@ -116,6 +116,39 @@ class DatabaseAccessTest {
     }
 
     @ParameterizedTest
+    @CsvSource({"jdbc:mysql://localhost/demo", "jdbc:postgresql://localhost/demo",
+            "jdbc:starrocks://localhost:9030/default_catalog.demo"})
+    void explainBindsParametersAndReturnsBoundedPlanRows(String url) throws SQLException {
+        String sql = "EXPLAIN SELECT id FROM users WHERE id > ?";
+        var statement = mock(PreparedStatement.class);
+        var rows = mock(ResultSet.class);
+        var columns = mock(ResultSetMetaData.class);
+        when(connection.prepareStatement(sql)).thenReturn(statement);
+        when(statement.executeQuery()).thenReturn(rows);
+        when(rows.getMetaData()).thenReturn(columns);
+        when(columns.getColumnCount()).thenReturn(1);
+        when(columns.getColumnLabel(1)).thenReturn("plan");
+        when(rows.next()).thenReturn(true, true, false);
+        when(rows.getObject(1)).thenReturn("Index Scan");
+        var result = reads(url, null).query(sql, List.of(3), 1);
+        assertEquals(List.of(Map.of("plan", "Index Scan")), result.get("rows"));
+        assertEquals(true, result.get("truncated"));
+        verify(statement).setObject(1, 3);
+        verify(statement).setMaxRows(2);
+        verify(statement).setQueryTimeout(10);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"jdbc:oracle:thin:@//localhost:1521/demo", "jdbc:sqlserver://localhost;databaseName=demo"})
+    void specialExplainRequiresTransactionToolBeforeExecutingSql(String url) throws SQLException {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> reads(url, null).query("EXPLAIN SELECT id FROM users", null, null));
+        assertTrue(error.getMessage().contains("db_execute"));
+        verify(connection, never()).prepareStatement(anyString());
+        verify(connection, never()).createStatement();
+    }
+
+    @ParameterizedTest
     @CsvSource({
             "jdbc:oracle:thin:@//localhost:1521/demo, orders, ORDERS, APP, true, false",
             "jdbc:postgresql://localhost/demo, ORDERS, orders, app, false, true",

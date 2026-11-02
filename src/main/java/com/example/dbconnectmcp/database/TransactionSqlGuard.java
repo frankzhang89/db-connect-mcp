@@ -26,7 +26,7 @@ import net.sf.jsqlparser.util.TablesNamesFinder;
  */
 public final class TransactionSqlGuard {
     enum Command { BEGIN, COMMIT, ROLLBACK, EXECUTE }
-    record Sql(String text, boolean truncate, boolean merge, boolean query) { }
+    record Sql(String text, boolean truncate, boolean merge, boolean query, ExplainSql explain) { }
     record Plan(Command command, List<Sql> statements) { }
     private final DatabaseTransactionProperties limits;
     private static final Pattern BEGIN = Pattern.compile("(?is)(?:BEGIN(?:\\s+(?:TRANSACTION|WORK))?|START\\s+TRANSACTION)");
@@ -58,6 +58,8 @@ public final class TransactionSqlGuard {
             List<Sql> statements = new ArrayList<>();
             for (int i = 0; i < parsed.size(); i++) {
                 Statement statement = parsed.get(i);
+                ExplainSql explain = ExplainSql.from(parts.get(i), statement);
+                if (explain != null) { statement = ((net.sf.jsqlparser.statement.ExplainStatement) statement).getStatement(); }
                 if (!(statement instanceof Select || statement instanceof Insert || statement instanceof Update
                         || statement instanceof Delete || statement instanceof Merge || statement instanceof Upsert
                         || statement instanceof Truncate)) { throw rejected(); }
@@ -84,7 +86,7 @@ public final class TransactionSqlGuard {
                 }.getTables(statement);
                 // Preserve the caller's text without a JDBC terminator (Oracle rejects it).
                 statements.add(new Sql(parts.get(i), statement instanceof Truncate,
-                        statement instanceof Merge, statement instanceof Select));
+                        statement instanceof Merge, statement instanceof Select, explain));
             }
             return new Plan(Command.EXECUTE, List.copyOf(statements));
         }
@@ -92,7 +94,7 @@ public final class TransactionSqlGuard {
     }
 
     private static IllegalArgumentException rejected() {
-        return new IllegalArgumentException("SQL_REJECTED: Only queries, DML, and TRUNCATE are allowed. "
+        return new IllegalArgumentException("SQL_REJECTED: Only queries, ordinary EXPLAIN SELECT, DML, and TRUNCATE are allowed. "
                 + "Send BEGIN, COMMIT, or ROLLBACK separately; other DDL and indirect SQL execution are forbidden.");
     }
 

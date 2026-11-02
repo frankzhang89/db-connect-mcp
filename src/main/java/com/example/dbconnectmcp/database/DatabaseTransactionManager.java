@@ -103,6 +103,13 @@ public final class DatabaseTransactionManager implements AutoCloseable {
             if (plan.command() == TransactionSqlGuard.Command.ROLLBACK) { return finish(tx, false); }
             if (tx.rollbackOnly) { return failure(tx, "ROLLBACK_REQUIRED", "A previous execution failed; explicitly ROLLBACK this transaction."); }
             if (plan.command() == TransactionSqlGuard.Command.COMMIT) { return finish(tx, true); }
+            // Validate target-dependent syntax for the entire script before its first write.
+            try {
+                for (var item : plan.statements()) {
+                    if (item.explain() != null) { item.explain().validateDialect(tx.lease.dialect(), true); }
+                }
+            }
+            catch (IllegalArgumentException error) { return failure(tx, "SQL_REJECTED", error.getMessage()); }
             return run(tx, plan.statements());
         }
         catch (InterruptedException error) {
@@ -173,6 +180,15 @@ public final class DatabaseTransactionManager implements AutoCloseable {
                 long left = deadline - clock.getAsLong();
                 if (left <= 0) { throw new SQLException("Script deadline exceeded.", "HYT00"); }
                 var sql = script.get(index);
+                if (sql.explain() != null) {
+                    var executor = new TransactionExplainExecutor(mapper, maxRows, statementTimeout, clock);
+                    var item = new LinkedHashMap<>(executor.execute(tx.connection, tx.lease.dialect(), sql.explain(), deadline));
+                    item.put("statementIndex", index);
+                    item.put("resultIndex", 0);
+                    results.add(item);
+                    if (clock.getAsLong() >= deadline) { throw new SQLException("Script deadline exceeded.", "HYT00"); }
+                    continue;
+                }
                 // Mark before attempting TRUNCATE: Oracle can commit prior work even when
                 // the DDL itself fails. Never claim full rollback after such an attempt.
                 if (sql.truncate() && !tx.lease.dialect().transactionalTruncate()) { tx.implicitCommitPossible = true; }
@@ -207,6 +223,16 @@ public final class DatabaseTransactionManager implements AutoCloseable {
             }
             Map<String, Object> result = describe(tx, true);
             result.put("results", results);
+            return result;
+        }
+        catch (TransactionExplainExecutor.CleanupFailure error) {
+            // SHOWPLAN may still be ON; do not send COMMIT or further user SQL on this handle.
+            tx.state = "UNKNOWN";
+            Map<String, Object> result = failure(tx, "PLAN_CLEANUP_FAILED",
+                    "Execution plan cleanup failed. The transaction handle was invalidated and its connection discarded; verify database state independently.");
+            result.put("statementIndex", Math.min(index, script.size() - 1));
+            result.put("results", results);
+            release(tx, true);
             return result;
         }
         catch (SQLException | RuntimeException error) {

@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.sql.*;
 import java.time.Duration;
 import java.util.Map;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
@@ -163,8 +164,16 @@ class DatabaseMcpIntegrationTest {
                 assertTrue(properties.has("transactionId"));
                 assertFalse(properties.has("context"));
 
+                var estimated = call(endpoint, session, "db_query", Map.of(
+                        "sql", "EXPLAIN SELECT balance FROM account WHERE id=?", "parameters", List.of(1)));
+                assertEquals(1, estimated.path("rowCount").asInt());
+
                 var begun = call(endpoint, session, "db_execute", Map.of("sql", "BEGIN"));
                 String id = begun.path("transactionId").asString();
+                var transactionPlan = call(endpoint, session, "db_execute", Map.of(
+                        "transactionId", id, "sql", "EXPLAIN SELECT balance FROM account WHERE id=1"));
+                assertEquals("QUERY", transactionPlan.path("results").get(0).path("type").asString());
+                assertEquals(1, transactionPlan.path("results").get(0).path("rowCount").asInt());
                 var own = call(endpoint, session, "db_execute", Map.of("transactionId", id,
                         "sql", "UPDATE account SET balance=900 WHERE id=1; SELECT balance FROM account WHERE id=1"));
                 assertEquals(900, own.path("results").get(1).path("rows").get(0).path("BALANCE").asInt());

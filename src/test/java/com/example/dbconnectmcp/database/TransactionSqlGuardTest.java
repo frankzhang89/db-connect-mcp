@@ -8,6 +8,25 @@ class TransactionSqlGuardTest {
     private final TransactionSqlGuard guard = new TransactionSqlGuard(new DatabaseTransactionProperties(120, 600, 5, 20, 20000, 30));
 
     @Test
+    void explainSupportsScriptsAndOracleSyntaxWithoutBypassingValidation() {
+        var plan = guard.validate("UPDATE t SET id=1; EXPLAIN SELECT * FROM t; EXPLAIN PLAN FOR WITH x AS (SELECT 1) SELECT * FROM x;");
+        assertEquals(3, plan.statements().size());
+        assertTrue(plan.statements().get(1).query());
+        assertEquals("SELECT * FROM t", plan.statements().get(1).explain().query());
+        assertTrue(plan.statements().get(2).explain().oracleSyntax());
+        for (String sql : new String[] {
+                "EXPLAIN ANALYZE SELECT 1", "EXPLAIN (ANALYZE FALSE) SELECT 1",
+                "EXPLAIN UPDATE t SET id=1", "EXPLAIN PLAN FOR DELETE FROM t",
+                "EXPLAIN SELECT * FROM t WHERE id=?", "EXPLAIN SELECT * FROM t WHERE id=:id",
+                "EXPLAIN WITH x AS (DELETE FROM t RETURNING id) SELECT * FROM x",
+                "EXPLAIN SELECT * INTO copy FROM t", "EXPLAIN SELECT * FROM t FOR UPDATE",
+                "EXPLAIN SELECT set_config('a','b',false)", "EXPLAIN SELECT 1; SET SHOWPLAN_XML ON",
+                "SET SHOWPLAN_XML ON; SELECT * FROM t; SET SHOWPLAN_XML OFF"}) {
+            assertThrows(IllegalArgumentException.class, () -> guard.validate(sql), sql);
+        }
+    }
+
+    @Test
     void recognizesStandaloneControlsAndPreservesLiteralSemicolons() {
         assertEquals(TransactionSqlGuard.Command.BEGIN, guard.validate("START TRANSACTION;").command());
         assertEquals(TransactionSqlGuard.Command.BEGIN, guard.validate("begin work").command());

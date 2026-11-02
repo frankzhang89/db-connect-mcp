@@ -34,10 +34,10 @@ public class DatabaseTools {
         return service.describeTable(tableName, schemaName);
     }
 
-    @McpTool(name = "db_query", description = "Run one read-only SELECT query (WITH ... SELECT allowed); bind values with ? placeholders and the parameters argument. Returns at most 100 rows within a 10 second timeout.",
+    @McpTool(name = "db_query", description = "Run one read-only SELECT query (WITH ... SELECT allowed), or ordinary EXPLAIN SELECT/WITH SELECT on MySQL, PostgreSQL, or StarRocks. EXPLAIN ANALYZE and options are rejected; Oracle/SQL Server plans require db_execute. Bind values with ? placeholders and the parameters argument. Returns at most 100 rows within a 10 second timeout.",
             annotations = @McpTool.McpAnnotations(readOnlyHint = true, destructiveHint = false, openWorldHint = false))
     public Map<String, Object> query(
-            @McpToolParam(description = "Read-only SELECT SQL", required = true) String sql,
+            @McpToolParam(description = "Read-only SELECT/WITH SELECT SQL, optionally prefixed with EXPLAIN (no ANALYZE/options)", required = true) String sql,
             @McpToolParam(description = "Scalar parameters in ? order, optional", required = false) List<Object> parameters,
             @McpToolParam(description = "Maximum number of rows to return, optional", required = false) Integer maxRows) {
         return service.query(sql, parameters, maxRows);

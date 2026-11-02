@@ -183,7 +183,7 @@ public class DatabaseReadService {
 
     public Map<String, Object> query(String sql, List<Object> parameters, Integer requestedRows) {
         // Whitelist validation happens before any connection is opened.
-        sqlGuard.validate(sql);
+        ExplainSql explain = sqlGuard.inspect(sql);
         // Clamp the requested row limit to the configured maximum.
         int rowLimit = requestedRows == null ? maxRows : Math.min(Math.max(1, requestedRows), maxRows);
         List<Object> args = parameters == null ? List.of() : parameters;
@@ -196,6 +196,7 @@ public class DatabaseReadService {
         try (var lease = manager.acquire(); Connection connection = lease.connection()) {
             DatabaseDialect dialect = lease.dialect();
             datasourceId = lease.datasourceId();
+            if (explain != null) { explain.validateDialect(dialect, false); }
             dialect.beginRead(connection);
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setQueryTimeout(timeoutSeconds);

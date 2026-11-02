@@ -18,6 +18,22 @@ class ReadOnlySqlGuardTest {
     }
 
     @Test
+    void acceptsOrdinaryExplainAndValidatesItsInnerQuery() {
+        assertDoesNotThrow(() -> guard.validate("EXPLAIN SELECT id FROM users WHERE id=?"));
+        assertDoesNotThrow(() -> guard.validate("explain WITH x AS (SELECT id FROM users) SELECT * FROM x"));
+        for (String sql : new String[] {
+                "EXPLAIN ANALYZE SELECT 1", "EXPLAIN (ANALYZE FALSE) SELECT 1",
+                "EXPLAIN FORMAT=JSON SELECT 1", "EXPLAIN PLAN FOR SELECT 1", "EXPLAIN users",
+                "EXPLAIN UPDATE users SET id=1", "EXPLAIN SELECT * FROM users FOR UPDATE",
+                "EXPLAIN SELECT id INTO copy FROM users", "EXPLAIN SELECT nextval('seq')",
+                "EXPLAIN WITH x AS (DELETE FROM users RETURNING id) SELECT * FROM x",
+                "EXPLAIN SELECT * FROM (WITH x AS (DELETE FROM users RETURNING id) SELECT * FROM x) d",
+                "EXPLAIN SELECT 1; DELETE FROM users", "EXPLAIN /* comment */ SELECT 1"}) {
+            assertThrows(IllegalArgumentException.class, () -> guard.validate(sql), sql);
+        }
+    }
+
+    @Test
     void rejectsWritesAndMultipleStatements() {
         assertThrows(IllegalArgumentException.class, () -> guard.validate("UPDATE users SET name = 'x'"));
         assertThrows(IllegalArgumentException.class, () -> guard.validate("CREATE TABLE secret (id INT)"));
