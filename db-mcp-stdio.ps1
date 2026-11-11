@@ -1,6 +1,6 @@
 # JDK home directory (absolute path), or the name of a JDK home environment variable.
 # Default: JAVA_HOME; if JAVA_HOME is empty/unset, use java.exe from PATH.
-$jdkHome = 'JAVA_HOME'
+$jdkHome = 'JDK25'
 $projectDir = $PSScriptRoot
 # Configure the JAR here. Prefer a deployed sibling JAR, then the local build output.
 $jarPath = Join-Path $projectDir 'db-mcp.jar'

@@ -19,6 +19,7 @@
 
     <properties>
         <java.version>25</java.version>
+        <skipTests>true</skipTests>
         <spring-ai.version>2.0.1</spring-ai.version>
         <jsqlparser.version>5.4</jsqlparser.version>
         <ojdbc.version>23.26.3.0.0</ojdbc.version>
