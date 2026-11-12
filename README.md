@@ -1,5 +1,7 @@
 # db-connect-mcp
 
+> **No longer maintained.** This project is no longer maintained. Its JDBC and Redis capabilities have moved to [Omni Connect MCP](https://github.com/frankzhang89/omni-connect-mcp). Please use Omni Connect MCP for ongoing development, updates, and issue reporting.
+
 A self-hostable MCP server with one current JDBC database and one Redis instance, providing read and write tools over stdio or Streamable HTTP. Supported JDBC databases are MySQL, Oracle, Microsoft SQL Server, PostgreSQL, and StarRocks. HTTP clients authenticate with a shared Bearer token. Clients can switch the process-wide JDBC data source without restarting. Startup database and Redis credentials stay on the server; switching requires supplying the new database credentials through a tool call.
 
 ## Requirements
